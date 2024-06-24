@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from utils.prefetch import PrefetchLoader, prefetch_transform
 from utils.bd_dataset import prepro_cls_DatasetBD
 
+from tqdm import tqdm
+
 
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
@@ -705,6 +707,8 @@ def test_given_dataloader_on_mix(model, test_dataloader,  criterion, device = No
                torch.cat(batch_original_targets_list)
 
 def validate_list_for_plot(given_list, require_len=None):
+    if given_list is None:
+        return False
 
     if (require_len is not None) and (len(given_list) == require_len):
         pass
@@ -804,15 +808,15 @@ def plot_loss(
     if validate_list_for_plot(train_loss_list, len_set):
         plt.plot(x, train_loss_list, marker="o", linewidth=2, label="Train Loss", linestyle="--")
     else:
-        logging.warning("train_loss_list contains None or len not match")
+        logging.debug("train_loss_list contains None or len not match")
     if validate_list_for_plot(clean_test_loss_list, len_set):
         plt.plot(x, clean_test_loss_list, marker="v", linewidth=2, label="Test Clean loss", linestyle="-")
     else:
-        logging.warning("clean_test_loss_list contains None or len not match")
+        logging.debug("clean_test_loss_list contains None or len not match")
     if validate_list_for_plot(bd_test_loss_list, len_set):
         plt.plot(x, bd_test_loss_list, marker="+", linewidth=2, label="Test Backdoor Loss", linestyle="-.")
     else:
-        logging.warning("bd_test_loss_list contains None or len not match")
+        logging.debug("bd_test_loss_list contains None or len not match")
 
     plt.xlabel("Epochs")
     plt.ylabel("Loss")
@@ -846,8 +850,8 @@ def plot_acc_like_metric_pure(
              save_folder_path: str,
              save_file_name="acc_like_metric_plots",
          ):
-    len_set = len(test_asr_list)
-    x = range(len(test_asr_list))
+    len_set = len(test_acc_list)
+    x = range(len_set)
 
     '''These line of set color is from https://stackoverflow.com/questions/8389636/creating-over-20-unique-legend-colors-using-matplotlib'''
     NUM_COLORS = 6
@@ -856,23 +860,22 @@ def plot_acc_like_metric_pure(
     ax = fig.add_subplot(111)
     ax.set_prop_cycle(color=[cm(1. * i / NUM_COLORS) for i in range(NUM_COLORS)])
     
-    
     if validate_list_for_plot(train_acc_list, len_set):
         plt.plot(x, train_acc_list,marker="o",linewidth=2,label="Train Acc",linestyle="--")
     else:
-        logging.warning("train_acc_list contains None, or len not match")
+        logging.debug("train_acc_list contains None, or len not match")
     if validate_list_for_plot(test_acc_list, len_set):
         plt.plot(x, test_acc_list, marker="o",linewidth=2,label="Test C-Acc",linestyle="--")
     else:
-        logging.warning("test_acc_list contains None, or len not match")
+        logging.debug("test_acc_list contains None, or len not match")
     if validate_list_for_plot(test_asr_list, len_set):
         plt.plot(x, test_asr_list,  marker="v", linewidth=2, label="Test ASR", linestyle = "-")
     else:
-        logging.warning("test_asr_list contains None, or len not match")
+        logging.debug("test_asr_list contains None, or len not match")
     if validate_list_for_plot(test_ra_list, len_set):
         plt.plot(x, test_ra_list, marker = "+", linewidth=2, label="Test RA", linestyle = "-.")
     else:
-        logging.warning("test_ra_list contains None, or len not match")
+        logging.debug("test_ra_list contains None, or len not match")
 
     plt.xlabel("Epochs")
     plt.ylabel("ACC")
@@ -909,15 +912,15 @@ def plot_acc_like_metric(
     if validate_list_for_plot(train_acc_list, len_set):
         plt.plot(x, train_acc_list,marker="o",linewidth=2,label="Train Acc",linestyle="--")
     else:
-        logging.warning("train_acc_list contains None, or len not match")
+        logging.debug("train_acc_list contains None, or len not match")
     if validate_list_for_plot(train_asr_list, len_set):
         plt.plot(x, train_asr_list, marker="v", linewidth=2, label="Train ASR", linestyle="-")
     else:
-        logging.warning("train_asr_list contains None, or len not match")
+        logging.debug("train_asr_list contains None, or len not match")
     if validate_list_for_plot(train_ra_list, len_set):
         plt.plot(x, train_ra_list, marker="+", linewidth=2, label="Train RA", linestyle = "-.")
     else:
-        logging.warning("train_ra_list contains None, or len not match")
+        logging.debug("train_ra_list contains None, or len not match")
     if validate_list_for_plot(test_acc_list, len_set):
         plt.plot(x, test_acc_list, marker="o",linewidth=2,label="Test C-Acc",linestyle="--")
     else:
@@ -925,11 +928,11 @@ def plot_acc_like_metric(
     if validate_list_for_plot(test_asr_list, len_set):
         plt.plot(x, test_asr_list,  marker="v", linewidth=2, label="Test ASR", linestyle = "-")
     else:
-        logging.warning("test_asr_list contains None, or len not match")
+        logging.debug("test_asr_list contains None, or len not match")
     if validate_list_for_plot(test_ra_list, len_set):
         plt.plot(x, test_ra_list, marker = "+", linewidth=2, label="Test RA", linestyle = "-.")
     else:
-        logging.warning("test_ra_list contains None, or len not match")
+        logging.debug("test_ra_list contains None, or len not match")
 
     plt.xlabel("Epochs")
     plt.ylabel("ACC")
@@ -1461,21 +1464,16 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         if verbose == 1:
             batch_predict_list = []
             batch_label_list = []
-            batch_original_index_list = []
-            batch_poison_indicator_list = []
-            batch_original_targets_list = []
 
         for batch_idx in range(self.batch_num_per_epoch):
-            x, labels, original_index, poison_indicator, original_targets  = self.get_one_batch()
+            x, labels, *additional_info = self.get_one_batch()
+            # x, labels, original_index, poison_indicator, original_targets  = self.get_one_batch()
             one_batch_loss, batch_predict = self.one_forward_backward(x, labels, self.device, verbose)
             batch_loss_list.append(one_batch_loss)
 
             if verbose == 1:
                 batch_predict_list.append(batch_predict.detach().clone().cpu())
                 batch_label_list.append(labels.detach().clone().cpu())
-                batch_original_index_list.append(original_index.detach().clone().cpu())
-                batch_poison_indicator_list.append(poison_indicator.detach().clone().cpu())
-                batch_original_targets_list.append(original_targets.detach().clone().cpu())
 
         one_epoch_loss = sum(batch_loss_list) / len(batch_loss_list)
         if self.scheduler is not None:
@@ -1494,10 +1492,7 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         elif verbose == 1:
             return one_epoch_loss, \
                    torch.cat(batch_predict_list), \
-                   torch.cat(batch_label_list), \
-                   torch.cat(batch_original_index_list), \
-                   torch.cat(batch_poison_indicator_list), \
-                   torch.cat(batch_original_targets_list)
+                   torch.cat(batch_label_list)
 
     def test_given_dataloader_on_mix(self, test_dataloader, device = None, verbose = 0):
 
@@ -1519,12 +1514,9 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         if verbose == 1:
             batch_predict_list = []
             batch_label_list = []
-            batch_original_index_list = []
-            batch_poison_indicator_list = []
-            batch_original_targets_list = []
 
         with torch.no_grad():
-            for batch_idx, (x, labels, original_index, poison_indicator, original_targets) in enumerate(test_dataloader):
+            for batch_idx, (x, labels, *additional_info) in enumerate(test_dataloader):
                 x = x.to(device, non_blocking=self.non_blocking)
                 labels = labels.to(device, non_blocking=self.non_blocking)
                 pred = model(x)
@@ -1536,9 +1528,6 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
                 if verbose == 1:
                     batch_predict_list.append(predicted.detach().clone().cpu())
                     batch_label_list.append(labels.detach().clone().cpu())
-                    batch_original_index_list.append(original_index.detach().clone().cpu())
-                    batch_poison_indicator_list.append(poison_indicator.detach().clone().cpu())
-                    batch_original_targets_list.append(original_targets.detach().clone().cpu())
 
                 metrics['test_correct'] += correct.item()
                 metrics['test_loss_sum_over_batch'] += loss.item()
@@ -1553,15 +1542,11 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         elif verbose == 1:
             return metrics, \
                    torch.cat(batch_predict_list), \
-                   torch.cat(batch_label_list), \
-                   torch.cat(batch_original_index_list), \
-                   torch.cat(batch_poison_indicator_list), \
-                   torch.cat(batch_original_targets_list)
+                   torch.cat(batch_label_list)
 
     def train_with_test_each_epoch_on_mix(self,
                                    train_dataloader,
                                    clean_test_dataloader,
-                                   bd_test_dataloader,
                                    total_epoch_num,
                                    criterion,
                                    optimizer,
@@ -1578,7 +1563,6 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
 
         test_dataloader_dict = {
                 "clean_test_dataloader":clean_test_dataloader,
-                "bd_test_dataloader":bd_test_dataloader,
             }
 
         self.set_with_dataloader(
@@ -1602,24 +1586,15 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         train_loss_list = []
         train_mix_acc_list = []
         clean_test_loss_list = []
-        bd_test_loss_list = []
         test_acc_list = []
-        test_asr_list = []
-        test_ra_list = []
 
-        for epoch in range(total_epoch_num):
+        for epoch in tqdm(range(total_epoch_num)):
 
             train_epoch_loss_avg_over_batch, \
             train_epoch_predict_list, \
-            train_epoch_label_list, \
-            train_epoch_original_index_list, \
-            train_epoch_poison_indicator_list, \
-            train_epoch_original_targets_list = self.train_one_epoch_on_mix(verbose=1)
+            train_epoch_label_list = self.train_one_epoch_on_mix(verbose=1)
 
             train_mix_acc = all_acc(train_epoch_predict_list, train_epoch_label_list)
-
-            train_bd_idx = torch.where(train_epoch_poison_indicator_list == 1)[0]
-            train_clean_idx = torch.where(train_epoch_poison_indicator_list == 0)[0]
 
             clean_metrics, \
             clean_test_epoch_predict_list, \
@@ -1629,28 +1604,13 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
             clean_test_loss_avg_over_batch = clean_metrics["test_loss_avg_over_batch"]
             test_acc = clean_metrics["test_acc"]
 
-            bd_metrics, \
-            bd_test_epoch_predict_list, \
-            bd_test_epoch_label_list, \
-            bd_test_epoch_original_index_list, \
-            bd_test_epoch_poison_indicator_list, \
-            bd_test_epoch_original_targets_list = self.test_given_dataloader_on_mix(test_dataloader_dict["bd_test_dataloader"], verbose=1)
-
-            bd_test_loss_avg_over_batch = bd_metrics["test_loss_avg_over_batch"]
-            test_asr = all_acc(bd_test_epoch_predict_list, bd_test_epoch_label_list)
-            test_ra = all_acc(bd_test_epoch_predict_list, bd_test_epoch_original_targets_list)
-
             self.agg(
                 {
                     "train_epoch_loss_avg_over_batch": train_epoch_loss_avg_over_batch,
                     "train_acc": train_mix_acc,
-                    
 
                     "clean_test_loss_avg_over_batch": clean_test_loss_avg_over_batch,
-                    "bd_test_loss_avg_over_batch" : bd_test_loss_avg_over_batch,
                     "test_acc" : test_acc,
-                    "test_asr" : test_asr,
-                    "test_ra" : test_ra,
                 }
             )
 
@@ -1658,22 +1618,16 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
             train_mix_acc_list.append(train_mix_acc)
             
             clean_test_loss_list.append(clean_test_loss_avg_over_batch)
-            bd_test_loss_list.append(bd_test_loss_avg_over_batch)
             test_acc_list.append(test_acc)
-            test_asr_list.append(test_asr)
-            test_ra_list.append(test_ra)
 
             self.plot_loss(
                 train_loss_list,
                 clean_test_loss_list,
-                bd_test_loss_list,
             )
 
             self.plot_acc_like_metric(
                 train_mix_acc_list,
                 test_acc_list,
-                test_asr_list,
-                test_ra_list,
             )
 
             self.agg_save_dataframe()
@@ -1683,23 +1637,19 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         return train_loss_list, \
                 train_mix_acc_list, \
                 clean_test_loss_list, \
-                bd_test_loss_list, \
-                test_acc_list, \
-                test_asr_list, \
-                test_ra_list
+                test_acc_list
 
     def plot_loss(
             self,
             train_loss_list : list,
             clean_test_loss_list : list,
-            bd_test_loss_list : list,
             save_file_name="loss_metric_plots",
           ):
 
         plot_loss(
             train_loss_list,
             clean_test_loss_list,
-            bd_test_loss_list,
+            clean_test_loss_list,
             self.save_folder_path,
             save_file_name,
         )
@@ -1707,18 +1657,16 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
     def plot_acc_like_metric(self,
                  train_acc_list: list,
                  test_acc_list: list,
-                 test_asr_list: list,
-                 test_ra_list: list,
                  save_file_name="acc_like_metric_plots",
              ):
 
         plot_acc_like_metric_pure(
             train_acc_list,
             test_acc_list,
-            test_asr_list,
-            test_ra_list,
-            self.save_folder_path,
-            save_file_name,
+            test_asr_list=None,
+            test_ra_list=None,
+            save_folder_path=self.save_folder_path,
+            save_file_name=save_file_name,
         )
 
     def test_current_model(self, test_dataloader_dict, device = None,):
@@ -1738,22 +1686,8 @@ class PureCleanModelTrainer(ModelTrainerCLS_v2):
         clean_test_loss_avg_over_batch = clean_metrics["test_loss_avg_over_batch"]
         test_acc = clean_metrics["test_acc"]
 
-        bd_metrics, \
-        bd_test_epoch_predict_list, \
-        bd_test_epoch_label_list, \
-        bd_test_epoch_original_index_list, \
-        bd_test_epoch_poison_indicator_list, \
-        bd_test_epoch_original_targets_list = self.test_given_dataloader_on_mix(test_dataloader_dict["bd_test_dataloader"], verbose=1)
-
-        bd_test_loss_avg_over_batch = bd_metrics["test_loss_avg_over_batch"]
-        test_asr = all_acc(bd_test_epoch_predict_list, bd_test_epoch_label_list)
-        test_ra = all_acc(bd_test_epoch_predict_list, bd_test_epoch_original_targets_list)
-
         return clean_test_loss_avg_over_batch, \
-                bd_test_loss_avg_over_batch, \
-                test_acc, \
-                test_asr, \
-                test_ra
+                test_acc
                 
 
 
@@ -1920,7 +1854,7 @@ class BackdoorModelTrainer(ModelTrainerCLS_v2):
         test_asr_list = []
         test_ra_list = []
 
-        for epoch in range(total_epoch_num):
+        for epoch in tqdm(range(total_epoch_num)):
 
             train_epoch_loss_avg_over_batch, \
             train_epoch_predict_list, \

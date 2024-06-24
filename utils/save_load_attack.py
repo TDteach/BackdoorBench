@@ -134,7 +134,7 @@ def save_attack_result(
             'img_size' : img_size,
             'clean_data': clean_data,
             'bd_train': bd_train.retrieve_state() if bd_train is not None else None,
-            'bd_test': bd_test.retrieve_state(),
+            'bd_test': bd_test.retrieve_state() if bd_test is not None else None,
             **kwargs,
         }
 

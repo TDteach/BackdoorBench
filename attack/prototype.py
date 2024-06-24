@@ -54,6 +54,7 @@ class NormalCase:
         parser.add_argument('--wd', type=float, help='weight decay of sgd')
         parser.add_argument('--steplr_milestones', type=list)
         parser.add_argument('--client_optimizer', type=str)
+        parser.add_argument('--client_optimizer_parameters_yaml', type=str)
         parser.add_argument('--random_seed', type=int,
                             help='random_seed')
         parser.add_argument('--frequency_save', type=int,
