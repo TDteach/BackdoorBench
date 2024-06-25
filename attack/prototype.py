@@ -38,7 +38,7 @@ class NormalCase:
                             help=".to(), set the non_blocking = ?")
         parser.add_argument("-pf", '--prefetch', type=lambda x: str(x) in ['True', 'true', '1'], help='use prefetch')
         parser.add_argument('--amp', type=lambda x: str(x) in ['True', 'true', '1'])
-        parser.add_argument('--device', type=str)
+        parser.add_argument('--device', type=str, help='cpu or cuda', choices={"cpu","cuda"})
         parser.add_argument('--lr_scheduler', type=str,
                             help='which lr_scheduler use for optimizer')
         parser.add_argument('--epochs', type=int)
@@ -66,6 +66,8 @@ class NormalCase:
         parser.add_argument('--git_hash', type=str,
                             help='git hash number, in order to find which version of code is used')
         parser.add_argument("--yaml_path", type=str, default="./config/attack/prototype/cifar10.yaml")
+        parser.add_argument("--log_level", dest="logLevel", default="INFO", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help="Set the logging level")
+
         return parser
 
     def add_yaml_to_args(self, args):
@@ -80,6 +82,10 @@ class NormalCase:
         args.input_height, args.input_width, args.input_channel = get_input_shape(args.dataset)
         args.img_size = (args.input_height, args.input_width, args.input_channel)
         args.dataset_path = f"{args.dataset_path}/{args.dataset}"
+        if args.device=='cuda' and torch.cuda.device_count() > 1:
+            setattr(args, 'doDataParallel', True)
+        else:
+            setattr(args, 'doDataParallel', False)
         return args
 
     def prepare(self, args):
@@ -99,6 +105,7 @@ class NormalCase:
         torch.save(args.__dict__, save_path + '/info.pickle')
 
         ### set the logger
+        logLevel = args.logLevel
         logFormatter = logging.Formatter(
             fmt='%(asctime)s [%(levelname)-8s] [%(filename)s:%(lineno)d] %(message)s',
             datefmt='%Y-%m-%d:%H:%M:%S',
@@ -108,19 +115,19 @@ class NormalCase:
         fileHandler = logging.FileHandler(
             save_path + '/' + time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime()) + '.log')
         fileHandler.setFormatter(logFormatter)
-        fileHandler.setLevel(logging.DEBUG)
+        fileHandler.setLevel(logLevel)
         logger.addHandler(fileHandler)
         # consoleHandler
         consoleHandler = logging.StreamHandler()
         consoleHandler.setFormatter(logFormatter)
-        consoleHandler.setLevel(logging.INFO)
+        consoleHandler.setLevel(logLevel)
         logger.addHandler(consoleHandler)
         # overall logger level should <= min(handler) otherwise no log will be recorded.
-        logger.setLevel(0)
+        logger.setLevel(logLevel)
 
         # disable other debug, since too many debug
-        logging.getLogger('PIL').setLevel(logging.WARNING)
-        logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+        logging.getLogger('PIL').setLevel(logging.ERROR)
+        logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 
         logging.info(pformat(args.__dict__))
 

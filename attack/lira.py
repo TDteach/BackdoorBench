@@ -49,6 +49,8 @@ from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_tr
 from utils.save_load_attack import save_attack_result
 from attack.badnet import BadNet
 
+from tqdm import tqdm
+
 loss_fn = nn.CrossEntropyLoss()
 
 
@@ -160,6 +162,23 @@ def all2one_target_transform(x, attack_target=1):
 def all2all_target_transform(x, num_classes):
     return (x + 1) % num_classes
 
+def net_to_device(args, net):
+    if args.doDataParallel:
+        net = torch.nn.DataParallel(net)
+    net.to(args.device)
+    return net
+
+def build_create_net(args):
+    def create_net(to_device=True, **kwargs):
+        net = generate_cls_model(model_name=args.model,
+                                 num_classes=args.num_classes,
+                                 image_size=args.img_size,
+                                 **kwargs)
+        if to_device:
+            net = net_to_device(args, net)
+        return net
+    return create_net
+
 
 def create_models(args):
     if args.attack_model == 'autoencoder':
@@ -167,23 +186,26 @@ def create_models(args):
         atkmodel = Autoencoder(args.input_channel)
         # Copy of attack model
         tgtmodel = Autoencoder(args.input_channel)
-    else:
+    elif args.attack_model == 'unet':
         logging.debug("use unet as atk model")
         atkmodel = UNet(args.input_channel)
         # Copy of attack model
         tgtmodel = UNet(args.input_channel)
+    else:
+        raise Exception(f'Invalid attack_model type: {args.attack_model}, which should in ["autoencoder","unet"]')
 
     # Classifier
-    create_net = partial(generate_cls_model,
-                         model_name=args.model,
-                         num_classes=args.num_classes,
-                         image_size=args.img_size,
-                         )
-    clsmodel = create_net()
+    create_net = build_create_net(args)
+    # create_net = partial(generate_cls_model,
+    #                      model_name=args.model,
+    #                      num_classes=args.num_classes,
+    #                      image_size=args.img_size,
+    #                      )
+    clsmodel = create_net(to_device=False)
 
-    tgtmodel.to(device)
-    atkmodel.to(device)
-    clsmodel.to(device)
+    tgtmodel = net_to_device(args, tgtmodel)
+    atkmodel = net_to_device(args, atkmodel)
+    clsmodel = net_to_device(args, clsmodel)
 
     # Optimizer
     tgtoptimizer = torch.optim.Adam(tgtmodel.parameters(), lr=args.lr_atk)
@@ -277,19 +299,16 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
     atkmodel.eval()
     tgtmodel.train()
     losslist = []
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (data, target) in tqdm(enumerate(train_loader)):
+        data, target = data.to(args.device), target.to(args.device)
 
-        tgtmodel.cuda()
-        clsmodel.cuda()
-        atkmodel.cuda()
-        data, target = data.cuda(), target.cuda()
+        ########################################
+        #### Update Transformation Function ####
+        ########################################
         with torch.cuda.amp.autocast(enabled=args.amp):
             if post_transforms is not None:
                 data = post_transforms(data)
 
-            ########################################
-            #### Update Transformation Function ####
-            ########################################
             noise = tgtmodel(data) * args.eps
             atkdata = clip_image(data + noise)
 
@@ -300,10 +319,10 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
 
         losslist.append(loss1.item())
 
-        scaler.scale(loss1).backward()
-        scaler.step(tgtoptimizer)
-        scaler.update()
+        clsoptimizer.zero_grad()
         tgtoptimizer.zero_grad()
+        loss1.backward()
+        tgtoptimizer.step()
 
         ###############################
         #### Update the classifier ####
@@ -317,10 +336,9 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
             loss_poison = loss_fn(atkoutput, target_transform(target))
             loss2 = loss_clean * args.alpha + (1 - args.alpha) * loss_poison
 
-        scaler.scale(loss2).backward()
-        scaler.step(clsoptimizer)
-        scaler.update()
         clsoptimizer.zero_grad()
+        loss2.backward()
+        clsoptimizer.step()
 
     atkloss = sum(losslist) / len(losslist)
 
@@ -438,13 +456,8 @@ def get_dataloader(opt, train=True, min_width=0):
 
 
 def get_model(args):
-    create_net = partial(generate_cls_model,
-                         model_name=args.model,
-                         num_classes=args.num_classes,
-                         image_size=args.img_size,
-                         )
+    create_net = build_create_net(args)
     netC = create_net()
-    netC.to(device)
     optimizerC, schedulerC = argparser_opt_scheduler(netC, args)
     logging.info(f'atk stage1, Optimizer: {optimizerC}, scheduler: {schedulerC}')
     return netC, optimizerC, schedulerC
@@ -455,9 +468,6 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
                trainepoch, writer, alpha=0.5, optimizerC=None,
                schedulerC=None, log_prefix='Internal', epochs_per_test=1, data_transforms=None, start_epoch=1,
                clip_image=None, criterion=None):
-    atkmodel.cuda()
-    netC.cuda()
-
     clean_accs, poison_accs = [], []
 
     atkmodel.eval()
@@ -483,14 +493,13 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
         batch_loss_list = []
         for batch_idx, (data, target) in enumerate(train_loader):
 
-            data, target = data.cuda(), target.cuda()
-            netC.cuda()
-            atkmodel.cuda()
+            data, target = data.to(args.device), target.to(args.device)
 
             with torch.cuda.amp.autocast(enabled=args.amp):
 
                 if data_transforms is not None:
                     data = data_transforms(data)
+                optimizerC.zero_grad()
 
                 output = netC(data)
                 loss_clean = loss_fn(output, target)
@@ -509,9 +518,7 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
 
                 loss = alpha * loss_clean + (1 - alpha) * loss_poison
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizerC)
-            scaler.update()
+            loss.backward()
             optimizerC.zero_grad()
 
             batch_loss_list.append(loss.item())
@@ -528,7 +535,7 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
             test_dataloader=clean_test_dataloader,
             criterion=criterion,
             non_blocking=args.non_blocking,
-            device=device,
+            device=args.device,
             verbose=1,
         )
 
@@ -545,7 +552,7 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
             test_dataloader=bd_test_dataloader,
             criterion=criterion,
             non_blocking=args.non_blocking,
-            device=device,
+            device=args.device,
             verbose=1,
         )
 
@@ -595,6 +602,67 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
     return clean_accs, poison_accs
 
 
+
+
+from typing import *
+class Static_LIRA_BD_Dataset(torch.utils.data.Dataset):
+    def __init__(
+            self,
+            dataloader, 
+            atkmodel: Callable,
+            clip_image: Callable,
+            target_transform: Callable,
+            args,
+    ):
+        images = []
+        targets = []
+        original_target_list = []
+        original_index_list = []
+
+        atkmodel.eval()
+        atkmodel = atkmodel.to(args.device, non_blocking=args.non_blocking)
+        for batch_idx, (x, labels, original_index, poison_indicator, original_targets) in enumerate(dataloader):
+            with torch.no_grad():
+                original_target_list.append(labels.detach().cpu().numpy())
+                x = x.to(args.device, non_blocking=args.non_blocking)
+
+                noise = atkmodel(x) * args.test_eps
+                atkdata = clip_image(x + noise)
+                atktarget = target_transform(labels)
+
+                images.append(atkdata.detach().cpu().numpy())
+                targets.append(atktarget.detach().cpu().numpy())
+                original_index_list.append(original_index.detach().cpu().numpy())
+        
+        self.images = np.concatenate(images)
+        self.targets = np.concatenate(targets).flatten()
+        self.original_index_list = np.concatenate(original_index_list).flatten()
+        self.original_target_list = np.concatenate(original_target_list).flatten()
+
+    def __len__(self):
+        return len(self.targets)
+    
+    def __getitem__(self, index):
+        img = self.images[index]
+        label = self.targets[index]
+        original_index = self.original_index_list[index]
+        original_target = self.original_target_list[index]
+        if label == original_target:
+            poison_or_not = 0
+        else:
+            poison_or_not = 1
+
+        return img, \
+                label, \
+                original_index, \
+                poison_or_not, \
+                original_target
+    
+    def get_poison_indices(self):
+        indices = (self.original_target_list==self.targets).nonzero()[0]
+        return indices
+    
+
 def main(args, clean_test_dataset_with_transform, criterion):
     clean_test_dataloader = DataLoader(clean_test_dataset_with_transform, batch_size=args.batch_size, shuffle=False,
                                        drop_last=False,
@@ -605,7 +673,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
     test_acc_list = []
     test_asr_list = []
     test_ra_list = []
-    train_loss_list = []
+    train_loss_list = []    
 
     agg = Metric_Aggregator()
 
@@ -638,103 +706,97 @@ def main(args, clean_test_dataset_with_transform, criterion):
     logging.debug('============================')
 
     logging.debug('BEGIN TRAINING >>>>>>')
-    clsmodel.cuda()
-    clsoptimizer = torch.optim.SGD(params=clsmodel.parameters(), lr=args.lr, momentum=0.9)
-    if "," in args.device:
-        logging.info("data parallel in main")
-        atkmodel = torch.nn.DataParallel(
-            atkmodel,
-            device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-        )
-        tgtmodel = torch.nn.DataParallel(
-            tgtmodel,
-            device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-        )
-        clsmodel = torch.nn.DataParallel(
-            clsmodel,
-            device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-        )
 
+    clsoptimizer = torch.optim.SGD(params=clsmodel.parameters(), lr=args.lr, momentum=0.9)
     for epoch in range(start_epoch, args.both_train_epochs + 1):
         for i in range(args.train_epoch):
             logging.debug(f'===== EPOCH: {epoch}/{args.both_train_epochs + 1} CLS {i + 1}/{args.train_epoch} =====')
             if not args.avoid_clsmodel_reinitialization:
-                clsmodel.cuda()
                 clsoptimizer = torch.optim.SGD(params=clsmodel.parameters(), lr=args.lr)
-            trainloss = train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target_transform,
-                              train_loader,
+            trainloss = train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target_transform, train_loader,
                               epoch, i, create_net, clip_image,
                               post_transforms=post_transforms)
             trainlosses.append(trainloss)
         atkmodel.load_state_dict(tgtmodel.state_dict())
         if args.avoid_clsmodel_reinitialization:
             scratchmodel = create_net()
-            if "," in args.device:
-                scratchmodel = torch.nn.DataParallel(
-                    scratchmodel,
-                    device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-                )
             scratchmodel.load_state_dict(clsmodel.state_dict())  # transfer from cls to scratch for testing
         else:
             clsmodel = create_net()
-        # test
+            scratchmodel = create_net()
 
-        clsmodel.eval()
-        clsmodel.to(device, non_blocking=args.non_blocking)
-        atkmodel.eval()
-        atkmodel.to(device, non_blocking=args.non_blocking)
 
-        bd_test_dataset = prepro_cls_DatasetBD_v2(
-            clean_test_dataset_with_transform.wrapped_dataset.dataset,
-            save_folder_path=f"{args.save_path}/bd_test_dataset_stage_one"
-        )
-        for trans_t in deepcopy(
-                clean_test_dataset_with_transform.wrap_img_transform.transforms):
-            if isinstance(trans_t, transforms.Normalize):
-                denormalizer = get_dataset_denormalization(trans_t)
-                logging.info(f"{denormalizer}")
+        bd_test_dataset_full = Static_LIRA_BD_Dataset(clean_test_dataloader,
+                                                 atkmodel,
+                                                 clip_image,
+                                                 target_transform,
+                                                 args)
+        bd_test_dataset = torch.utils.data.Subset(bd_test_dataset_full, 
+                                                  indices=bd_test_dataset_full.get_poison_indices())
 
-        clean_test_dataset_with_transform.wrapped_dataset.getitem_all = True
+        bd_test_dataloader = DataLoader(bd_test_dataset, batch_size=args.batch_size, shuffle=False,
+                                        drop_last=False,
+                                        pin_memory=args.pin_memory, num_workers=args.num_workers, )
 
-        for batch_idx, (x, labels, original_index, poison_indicator, original_targets) in enumerate(
-                clean_test_dataloader):
-            with torch.no_grad():
-                x = x.to(device, non_blocking=args.non_blocking)
+        # # generate bd test dataset
 
-                noise = atkmodel(x) * args.test_eps
-                atkdata = clip_image(x + noise)
-                atktarget = target_transform(labels)
+        # clsmodel.eval()
+        # clsmodel.to(args.device, non_blocking=args.non_blocking)
+        # atkmodel.eval()
+        # atkmodel.to(args.device, non_blocking=args.non_blocking)
 
-                position_changed = (labels - atktarget != 0)
-                atkdata = atkdata[position_changed]
-                targets1 = labels.detach().clone().cpu()[position_changed]
-                y_poison_batch = atktarget.detach().clone().cpu()[position_changed]
-                for idx_in_batch, t_img in enumerate(atkdata.detach().clone().cpu()):
-                    if int(y_poison_batch[idx_in_batch]) == int(targets1[idx_in_batch]):
-                        print("find bug")
-                    bd_test_dataset.set_one_bd_sample(
-                        selected_index=int(
-                            batch_idx * int(args.batch_size) + torch.where(position_changed.detach().clone().cpu())[0][
-                                idx_in_batch]),
-                        # manually calculate the original index, since we do not shuffle the dataloader
-                        img=denormalizer(t_img),
-                        bd_label=int(y_poison_batch[idx_in_batch]),
-                        label=int(targets1[idx_in_batch]),
-                    )
+        # bd_test_dataset = prepro_cls_DatasetBD_v2(
+        #     clean_test_dataset_with_transform.wrapped_dataset.dataset,
+        #     save_folder_path=f"{args.save_path}/bd_test_dataset_stage_one"
+        # )
 
-        bd_test_dataset.subset(
-            np.where(bd_test_dataset.poison_indicator == 1)[0]
-        )
-        bd_test_dataset_with_transform = dataset_wrapper_with_transform(
-            bd_test_dataset,
-            clean_test_dataset_with_transform.wrap_img_transform,
-        )
+        # for trans_t in deepcopy(
+        #         clean_test_dataset_with_transform.wrap_img_transform.transforms):
+        #     if isinstance(trans_t, transforms.Normalize):
+        #         denormalizer = get_dataset_denormalization(trans_t)
+        #         logging.info(f"{denormalizer}")
+
+        # clean_test_dataset_with_transform.wrapped_dataset.getitem_all = True
+
+        # for batch_idx, (x, labels, original_index, poison_indicator, original_targets) in enumerate(
+        #         clean_test_dataloader):
+        #     with torch.no_grad():
+        #         x = x.to(args.device, non_blocking=args.non_blocking)
+
+        #         noise = atkmodel(x) * args.test_eps
+        #         atkdata = clip_image(x + noise)
+        #         atktarget = target_transform(labels)
+
+        #         position_changed = (labels - atktarget != 0)
+        #         atkdata = atkdata[position_changed]
+        #         targets1 = labels.detach().clone().cpu()[position_changed]
+        #         y_poison_batch = atktarget.detach().clone().cpu()[position_changed]
+        #         for idx_in_batch, t_img in enumerate(atkdata.detach().clone().cpu()):
+        #             if int(y_poison_batch[idx_in_batch]) == int(targets1[idx_in_batch]):
+        #                 print("find bug")
+        #             bd_test_dataset.set_one_bd_sample(
+        #                 selected_index=int(
+        #                     batch_idx * int(args.batch_size) + torch.where(position_changed.detach().clone().cpu())[0][
+        #                         idx_in_batch]),
+        #                 # manually calculate the original index, since we do not shuffle the dataloader
+        #                 img=denormalizer(t_img),
+        #                 bd_label=int(y_poison_batch[idx_in_batch]),
+        #                 label=int(targets1[idx_in_batch]),
+        #             )
+
+        # bd_test_dataset.subset(
+        #     np.where(bd_test_dataset.poison_indicator == 1)[0]
+        # )
+        # bd_test_dataset_with_transform = dataset_wrapper_with_transform(
+        #     bd_test_dataset,
+        #     clean_test_dataset_with_transform.wrap_img_transform,
+        # )
 
         # generate bd test dataloader
 
-        bd_test_dataloader = DataLoader(bd_test_dataset_with_transform, batch_size=args.batch_size, shuffle=False,
-                                        drop_last=False,
-                                        pin_memory=args.pin_memory, num_workers=args.num_workers, )
+        # bd_test_dataloader = DataLoader(bd_test_dataset_with_transform, batch_size=args.batch_size, shuffle=False,
+        #                                 drop_last=False,
+        #                                 pin_memory=args.pin_memory, num_workers=args.num_workers, )
 
         ### My test code start
 
@@ -746,7 +808,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
             test_dataloader=clean_test_dataloader,
             criterion=criterion,
             non_blocking=args.non_blocking,
-            device=device,
+            device=args.device,
             verbose=1,
         )
 
@@ -763,7 +825,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
             test_dataloader=bd_test_dataloader,
             criterion=criterion,
             non_blocking=args.non_blocking,
-            device=device,
+            device=args.device,
             verbose=1,
         )
 
@@ -840,25 +902,11 @@ def main2(args, pre_clsmodel, pre_atkmodel, clean_test_dataloader, bd_test_datal
 
     atkmodel, tgtmodel, tgtoptimizer, _, create_net = create_models(args)
     netC, optimizerC, schedulerC = get_model(args)
-
-    if "," in args.device:
-        logging.info("data parallel in main2")
-        netC = torch.nn.DataParallel(
-            netC,
-            device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-        )
-        atkmodel = torch.nn.DataParallel(
-            atkmodel,
-            device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-        )
-
     netC.load_state_dict(pre_clsmodel.state_dict())
 
     target_transform = get_target_transform(args)
 
     atkmodel.load_state_dict(pre_atkmodel.state_dict())
-
-    netC.to(device)
 
     optimizerC, schedulerC = argparser_opt_scheduler(netC, args_for_finetune)
 
@@ -977,18 +1025,43 @@ class LIRA(BadNet):
 
         criterion = argparser_criterion(args)
 
-        global device
-        device = torch.device(
-            (
-                f"cuda:{[int(i) for i in args.device[5:].split(',')][0]}" if "," in args.device else args.device
-                # since DataParallel only allow .to("cuda")
-            ) if torch.cuda.is_available() else "cpu"
-        )
-        global scaler
-        scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+        # global device
+        # device = torch.device(
+        #     (
+        #         f"cuda:{[int(i) for i in args.device[5:].split(',')][0]}" if "," in args.device else args.device
+        #         # since DataParallel only allow .to("cuda")
+        #     ) if torch.cuda.is_available() else "cpu"
+        # )
+        # global scaler
+        # scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
         clsmodel, atkmodel, bd_test_dataloader = main(args, clean_test_dataset_with_transform, criterion)
         main2(args, clsmodel, atkmodel, clean_test_dataloader, bd_test_dataloader, criterion)
         ###
+
+        ## compose the prepro_cls_DatasetBD_v2 as required
+        denormalizer = None
+        for trans_t in deepcopy(
+                clean_test_dataset_with_transform.wrap_img_transform.transforms):
+            if isinstance(trans_t, transforms.Normalize):
+                denormalizer = get_dataset_denormalization(trans_t)
+                logging.info(f"{denormalizer}")
+
+        from torchvision.transforms.transforms import Compose
+        from utils.aggregate_block.bd_attack_generate import general_compose
+        bd_transform = general_compose([
+            (Compose([torch.from_numpy, denormalizer]), False),
+        ])
+
+        bd_dataset = bd_test_dataloader.dataset # torch.utils.data.Subset
+        bd_test_dataset_to_store = prepro_cls_DatasetBD_v2(
+            bd_dataset,
+            poison_indicator=np.ones(len(bd_dataset), dtype=int),
+
+            bd_image_pre_transform= bd_transform,
+            bd_label_pre_transform= lambda x:x,
+
+            save_folder_path=f"{args.save_path}/bd_test_dataset_stage_one"
+        )
 
         save_attack_result(
             model_name=args.model,
@@ -998,7 +1071,7 @@ class LIRA(BadNet):
             img_size=args.img_size,
             clean_data=args.dataset,
             bd_train=None,
-            bd_test=bd_test_dataloader.dataset.wrapped_dataset,
+            bd_test=bd_test_dataset_to_store,
             save_path=args.save_path,
         )
 

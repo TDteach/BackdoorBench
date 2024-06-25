@@ -243,7 +243,7 @@ class prepro_cls_DatasetBD_v2(torch.utils.data.Dataset):
     def prepro_backdoor(self):
         for selected_index in tqdm(self.original_index_array, desc="prepro_backdoor"):
             if self.poison_indicator[selected_index] == 1:
-                img, label = self.dataset[selected_index]
+                img, label, *additional_info = self.dataset[selected_index]
                 img = self.bd_image_pre_transform(img, target=label, image_serial_id=selected_index)
                 bd_label = self.bd_label_pre_transform(label)
                 self.set_one_bd_sample(

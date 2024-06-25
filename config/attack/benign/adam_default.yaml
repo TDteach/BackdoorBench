@@ -1,0 +1,4 @@
+client_optimizer: adam
+client_optimizer_parameters:
+    betas: [0.9, 0.999]
+    amsgrad: True
