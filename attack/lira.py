@@ -293,8 +293,27 @@ def hp_test(args, atkmodel, scratchmodel, target_transform,
     return correct, correct_transform
 
 
+def DSWD_dis(clean_feat, poi_feat, weight):
+    # clean_len = len(clean_feat)
+    # poi_len = len(poi_feat)
+    clean_feat = clean_feat.transpose(0, 1)
+    poi_feat = poi_feat.transpose(0, 1)
+    proj_clean_feat = weight.mm(clean_feat)
+    proj_poi_feat = weight.mm(poi_feat)
+    class_num = proj_clean_feat.size(0)
+    dis = []
+    for i in range(class_num):
+        proj_clean_tmp, _ = torch.sort(proj_clean_feat[i, :])
+        proj_poi_tmp, _ = torch.sort(proj_poi_feat[i, :])
+        d = torch.abs(proj_clean_tmp - proj_poi_tmp)
+        dis.append(torch.mean(d))
+    dswd = torch.mean(torch.stack(dis))
+
+    return dswd
+
+
 def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target_transform,
-          train_loader, epoch, train_epoch, create_net, clip_image, post_transforms=None):
+          train_loader, epoch, train_epoch, create_net, clip_image, post_transforms=None, wasserstein_stuff=None):
     clsmodel.train()
     atkmodel.eval()
     tgtmodel.train()
@@ -312,10 +331,25 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
             noise = tgtmodel(data) * args.eps
             atkdata = clip_image(data + noise)
 
-            # Calculate loss
             atkoutput = clsmodel(atkdata)
             loss_poison = loss_fn(atkoutput, target_transform(target))
-            loss1 = loss_poison
+
+            # Calculate loss
+            if wasserstein_stuff is not None:
+                output = clsmodel(data)
+
+                recorder = wasserstein_stuff['recorder']
+                poison_feat, clean_feat = recorder[-2], recorder[-1]
+                # recorder.clear()
+
+                module = wasserstein_stuff['module']
+                weight_tensor = module.weight.data.detach()
+
+                weight = wasserstein_stuff['weight']
+                loss_DSWD = DSWD_dis(clean_feat, poison_feat, weight_tensor)
+                loss1 = loss_poison + loss_DSWD * weight
+            else:
+                loss1 = loss_poison
 
         losslist.append(loss1.item())
 
@@ -323,6 +357,10 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
         tgtoptimizer.zero_grad()
         loss1.backward()
         tgtoptimizer.step()
+
+        # if wasserstein_stuff:
+        #     del recorder[1]
+        #     del recorder[0]
 
         ###############################
         #### Update the classifier ####
@@ -661,7 +699,23 @@ class Static_LIRA_BD_Dataset(torch.utils.data.Dataset):
     def get_poison_indices(self):
         indices = (self.original_target_list==self.targets).nonzero()[0]
         return indices
-    
+
+
+def build_record_hooker(record_array):
+    def hooker(module, input):
+        record_array.append(input[0])
+    return hooker
+
+def register_hook_before_final(clsmodel, record_array):
+    m_list = list(clsmodel.modules())
+    m_list.reverse()
+    for m in m_list:
+        if isinstance(m, torch.nn.Linear):
+            final_module = m
+            break
+    hooker = build_record_hooker(record_array)
+    hook_handle = final_module.register_forward_pre_hook(hooker)
+    return final_module, hook_handle
 
 def main(args, clean_test_dataset_with_transform, criterion):
     clean_test_dataloader = DataLoader(clean_test_dataset_with_transform, batch_size=args.batch_size, shuffle=False,
@@ -694,6 +748,17 @@ def main(args, clean_test_dataset_with_transform, criterion):
         logging.debug(atkmodel)
         logging.debug(clsmodel)
 
+    wasserstein_stuff = None
+    if hasattr(args, 'wasserstein_weight') and args.wasserstein_weight > 0:
+        feature_recorder = []
+        final_module, hook_handle = register_hook_before_final(clsmodel, feature_recorder)
+        wasserstein_stuff = {
+            'weight': args.wasserstein_weight,
+            'handle': hook_handle,
+            'recorder': feature_recorder,
+            'module': final_module
+        }
+
     target_transform = get_target_transform(args)
 
     trainlosses = []
@@ -715,7 +780,8 @@ def main(args, clean_test_dataset_with_transform, criterion):
                 clsoptimizer = torch.optim.SGD(params=clsmodel.parameters(), lr=args.lr)
             trainloss = train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target_transform, train_loader,
                               epoch, i, create_net, clip_image,
-                              post_transforms=post_transforms)
+                              post_transforms=post_transforms,
+                              wasserstein_stuff=wasserstein_stuff)
             trainlosses.append(trainloss)
         atkmodel.load_state_dict(tgtmodel.state_dict())
         if args.avoid_clsmodel_reinitialization:
@@ -973,6 +1039,10 @@ class LIRA(BadNet):
         parser.add_argument('--test_use_train_best', default=False, action='store_true')
         parser.add_argument('--test_use_train_last', default=True, action='store_true')
 
+        ################### for Wasserstein Backdoor
+        parser.add_argument('--wasserstein_weight', type=float, default=None, help='weight behind the wasserstein distance term, default is None representing no such term is added', required=False)
+
+
         return parser
 
     def stage1_non_training_data_prepare(self):
@@ -1003,25 +1073,26 @@ class LIRA(BadNet):
                                            drop_last=False,
                                            pin_memory=args.pin_memory, num_workers=args.num_workers, )
 
-        self.net = generate_cls_model(
-            model_name=args.model,
-            num_classes=args.num_classes,
-            image_size=args.img_size[0],
-        )
+        # self.net = generate_cls_model(
+        #     model_name=args.model,
+        #     num_classes=args.num_classes,
+        #     image_size=args.img_size[0],
+        # )
 
-        self.device = torch.device(
-            (
-                f"cuda:{[int(i) for i in args.device[5:].split(',')][0]}" if "," in args.device else args.device
-                # since DataParallel only allow .to("cuda")
-            ) if torch.cuda.is_available() else "cpu"
-        )
+        # self.device = torch.device(
+        #     (
+        #         f"cuda:{[int(i) for i in args.device[5:].split(',')][0]}" if "," in args.device else args.device
+        #         # since DataParallel only allow .to("cuda")
+        #     ) if torch.cuda.is_available() else "cpu"
+        # )
 
-        if "," in args.device:
-            self.net = torch.nn.DataParallel(
-                self.net,
-                device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
-            )
+        # if "," in args.device:
+        #     self.net = torch.nn.DataParallel(
+        #         self.net,
+        #         device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
+        #     )
 
+        self.device = args.device
 
         criterion = argparser_criterion(args)
 
@@ -1075,6 +1146,16 @@ class LIRA(BadNet):
             save_path=args.save_path,
         )
 
+        path = os.path.join(args.save_path, 'args.yaml')
+        self.save_args(path)
+
+        path = os.path.join(args.save_path, 'atkmodel.pt')
+        if isinstance(atkmodel, torch.nn.DataParallel):
+            torch.save(atkmodel.module.state_dict(), path)
+        else:
+            torch.save(atkmodel.state_dict(), path)
+
+
 
 if __name__ == '__main__':
     attack = LIRA()
@@ -1086,6 +1167,8 @@ if __name__ == '__main__':
     attack.add_yaml_to_args(args)
     args = attack.process_args(args)
     attack.prepare(args)
+    if hasattr(args, 'wasserstein_weight') and args.wasserstein_weight > 0:
+        args.doDataParallel = False
     assert int(args.epochs - args.both_train_epochs) > 0, "(total) epochs should be larger than both_train_epochs"
     attack.stage1_non_training_data_prepare()
     attack.stage2_training()

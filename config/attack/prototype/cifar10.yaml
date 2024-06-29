@@ -3,7 +3,7 @@ pin_memory: True
 non_blocking: True
 prefetch: False
 amp: False
-device: cuda:0
+device: cuda
 client_optimizer: sgd
 client_optimizer_parameters:
     momentum: 0.9

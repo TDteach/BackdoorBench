@@ -282,6 +282,21 @@ class NormalCase:
 
         torch.save(self.net.cpu().state_dict(), f"{args.save_path}/clean_model.pth")
 
+    def save_args(self, save_path=None):
+        if not hasattr(self, 'args'): return
+        if save_path is None:
+            save_path = os.path.join(args.save_path, 'args.yaml')
+        with open(save_path, 'w') as yamlfh:
+            yaml.dump(self.args, yamlfh)
+
+    def load_args(self, load_path):
+        with open(load_path, 'r') as yamlfh:
+            loaded_args = yaml.save_load(yamlfh)
+        if hasattr(self, 'args'):
+            self.args.update(loaded_args)
+        else:
+            self.args = loaded_args
+
 
 if __name__ == '__main__':
     normal_train_process = NormalCase()
