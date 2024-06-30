@@ -22,7 +22,7 @@ finetune_alpha: 0.5
 finetune_client_optimizer: sgd
 finetune_sgd_momentum: 0.9
 finetune_wd: 0.0005
-epochs: 300 # first and second stage
+epochs: 100 # first and second stage
 finetune_lr: 0.01
 finetune_lr_scheduler: MultiStepLR
 finetune_steplr_gamma: 0.1
