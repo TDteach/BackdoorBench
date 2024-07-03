@@ -990,6 +990,8 @@ def main2(args, pre_clsmodel, pre_atkmodel, clean_test_dataloader, bd_test_datal
                                          writer=None, log_prefix='POISON', alpha=args.test_alpha, epochs_per_test=1,
                                          optimizerC=optimizerC, schedulerC=schedulerC, data_transforms=data_transforms,
                                          clip_image=clip_image, criterion=criterion)
+    
+    return netC
 
 
 class LIRA(BadNet):
@@ -1106,7 +1108,7 @@ class LIRA(BadNet):
         # global scaler
         # scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
         clsmodel, atkmodel, bd_test_dataloader = main(args, clean_test_dataset_with_transform, criterion)
-        main2(args, clsmodel, atkmodel, clean_test_dataloader, bd_test_dataloader, criterion)
+        clsmodel = main2(args, clsmodel, atkmodel, clean_test_dataloader, bd_test_dataloader, criterion)
         ###
 
         ## compose the prepro_cls_DatasetBD_v2 as required

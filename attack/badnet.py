@@ -124,7 +124,7 @@ class BadNet(NormalCase):
         clean_test_dataset_with_transform, \
         clean_test_dataset_targets \
             = self.benign_prepare()
-        
+
         train_bd_img_transform, test_bd_img_transform = bd_attack_img_trans_generate(args)
         ### get the backdoor transform on label
         bd_label_transform = bd_attack_label_trans_generate(args)

@@ -324,7 +324,6 @@ class i_bau(defense):
 		parser.add_argument('--frequency_save', type=int,
 						help=' frequency_save, 0 is never')
 
-		parser.add_argument('--random_seed', type=int, help='random seed')
 		parser.add_argument('--yaml_path', type=str, default="./config/defense/i-bau/config.yaml", help='the path of yaml')
 
 		#set the parameter for the i-bau defense
@@ -358,42 +357,8 @@ class i_bau(defense):
 			model,
 		)
 
-	def set_logger(self):
-		args = self.args
-		logFormatter = logging.Formatter(
-			fmt='%(asctime)s [%(levelname)-8s] [%(filename)s:%(lineno)d] %(message)s',
-			datefmt='%Y-%m-%d:%H:%M:%S',
-		)
-		logger = logging.getLogger()
 
-		fileHandler = logging.FileHandler(args.log + '/' + time.strftime("%Y_%m_%d_%H_%M_%S", time.localtime()) + '.log')
-		fileHandler.setFormatter(logFormatter)
-		logger.addHandler(fileHandler)
-
-		consoleHandler = logging.StreamHandler()
-		consoleHandler.setFormatter(logFormatter)
-		logger.addHandler(consoleHandler)
-
-		logger.setLevel(logging.INFO)
-		logging.info(pformat(args.__dict__))
-
-		try:
-			logging.info(pformat(get_git_info()))
-		except:
-			logging.info('Getting git info fails.')
-	
-	def set_devices(self):
-		# self.device = torch.device(
-		# 	(
-		# 		f"cuda:{[int(i) for i in self.args.device[5:].split(',')][0]}" if "," in self.args.device else self.args.device
-		# 		# since DataParallel only allow .to("cuda")
-		# 	) if torch.cuda.is_available() else "cpu"
-		# )
-		self.device= self.args.device
 	def mitigation(self):
-		self.set_devices()
-		fix_random(self.args.random_seed)
-
 		# Prepare model, optimizer, scheduler
 		model = generate_cls_model(self.args.model,self.args.num_classes)
 		model.load_state_dict(self.result['model'])
@@ -678,17 +643,18 @@ class i_bau(defense):
 
 	def defense(self,result_file):
 		self.set_result(result_file)
-		self.set_logger()
 		result = self.mitigation()
 		return result
 	
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description=sys.argv[0])
-	i_bau.add_arguments(parser)
+	parser = i_bau.add_base_arguments(parser)
+	parser = i_bau.add_arguments(parser)
 	args = parser.parse_args()
 	i_bau_method = i_bau(args)
 	if "result_file" not in args.__dict__:
 		args.result_file = 'defense_test_badnet'
 	elif args.result_file is None:
 		args.result_file = 'defense_test_badnet'
+	i_bau_method.prepare()
 	result = i_bau_method.defense(args.result_file)

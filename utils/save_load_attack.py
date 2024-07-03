@@ -187,6 +187,7 @@ class Args:
 
 def load_attack_result(
     save_path : str,
+    return_backdoor_model=False
 ):
     '''
     This function first replicate the basic steps of generate models and clean train and test datasets
@@ -257,16 +258,19 @@ def load_attack_result(
             logging.info("No bd_train info found.")
             bd_train_dataset_with_transform = None
 
-
-        bd_test_dataset = prepro_cls_DatasetBD_v2(test_dataset_without_transform)
-        bd_test_dataset.set_state(
-            load_file['bd_test']
-        )
-        bd_test_dataset_with_transform = dataset_wrapper_with_transform(
-            bd_test_dataset,
-            test_img_transform,
-            test_label_transform,
-        )
+        if load_file['bd_test'] is not None:
+            bd_test_dataset = prepro_cls_DatasetBD_v2(test_dataset_without_transform)
+            bd_test_dataset.set_state(
+                load_file['bd_test']
+            )
+            bd_test_dataset_with_transform = dataset_wrapper_with_transform(
+                bd_test_dataset,
+                test_img_transform,
+                test_label_transform,
+            )
+        else:
+            logging.info("No bd_test info found.")
+            bd_test_dataset_with_transform = None
 
         new_dict = copy.deepcopy(load_file['model'])
         for k, v in load_file['model'].items():
@@ -284,10 +288,11 @@ def load_attack_result(
             if model_key != old_keys[key_idx]:
                 logging.info(f"change key name from {old_keys[key_idx]} to {model_key}")
                 load_file['model'][model_key] = load_file['model'].pop(old_keys[key_idx])
+        model.load_state_dict(load_file['model'])
 
         load_dict = {
                 'model_name': load_file['model_name'],
-                'model': load_file['model'],
+                'model': model if return_backdoor_model else load_file['model'],
                 'clean_train': clean_train_dataset_with_transform,
                 'clean_test' : clean_test_dataset_with_transform,
                 'bd_train': bd_train_dataset_with_transform,

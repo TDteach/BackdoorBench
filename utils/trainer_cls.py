@@ -621,8 +621,10 @@ def given_dataloader_test(
     }
     criterion = criterion.to(device, non_blocking=non_blocking)
 
-    if verbose == 1:
+    if verbose >= 1:
         batch_predict_list, batch_label_list = [], []
+    if verbose >= 2:
+        batch_logits_list = []
 
     with torch.no_grad():
         for batch_idx, (x, target, *additional_info) in enumerate(test_dataloader):
@@ -634,9 +636,11 @@ def given_dataloader_test(
             _, predicted = torch.max(pred, -1)
             correct = predicted.eq(target).sum()
 
-            if verbose == 1:
+            if verbose >= 1:
                 batch_predict_list.append(predicted.detach().clone().cpu())
                 batch_label_list.append(target.detach().clone().cpu())
+            if verbose >= 2:
+                batch_logits_list.append(pred.detach().clone().cpu())
 
             metrics['test_correct'] += correct.item()
             metrics['test_loss_sum_over_batch'] += loss.item()
@@ -649,6 +653,8 @@ def given_dataloader_test(
         return metrics, None, None
     elif verbose == 1:
         return metrics, torch.cat(batch_predict_list), torch.cat(batch_label_list)
+    elif verbose == 2:
+        return metrics, torch.cat(batch_predict_list), torch.cat(batch_label_list), torch.cat(batch_logits_list)
 
 def test_given_dataloader_on_mix(model, test_dataloader,  criterion, device = None, non_blocking=True, verbose = 0):
 

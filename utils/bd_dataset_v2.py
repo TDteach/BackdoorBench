@@ -16,6 +16,8 @@ from typing import *
 from torchvision.transforms import ToPILImage
 from torchvision.datasets import DatasetFolder, ImageFolder
 
+from utils.useful_tools import absolute_to_relative_path as ator_path
+
 class slice_iter(torch.utils.data.dataset.Dataset):
     '''iterate over a slice of the dataset'''
     def __init__(self,
@@ -140,7 +142,7 @@ class poisonedCLSDataContainer:
         }
 
     def set_state(self, state_file):
-        self.save_folder_path = state_file["save_folder_path"]
+        self.save_folder_path = ator_path(state_file["save_folder_path"])
         self.data_dict = state_file["data_dict"]
         self.save_file_format = state_file["save_file_format"]
 
@@ -171,7 +173,7 @@ class poisonedCLSDataContainer:
         if self.save_folder_path is None:
             return self.data_dict[key]
         else:
-            file_path = self.data_dict[key]["path"]
+            file_path = ator_path(self.data_dict[key]["path"])
             other_info = self.data_dict[key]["other_info"]
             img =  Image.open(file_path)
             im = deepcopy(img)
@@ -346,7 +348,7 @@ class prepro_cls_DatasetBD_v2(torch.utils.data.Dataset):
         self.getitem_all_switch = state_file['getitem_all_switch']
         self.original_index_array = state_file["original_index_array"]
         self.poison_indicator = state_file["poison_indicator"]
-        self.save_folder_path = state_file["save_folder_path"]
+        self.save_folder_path = ator_path(state_file["save_folder_path"])
 
 
 class xy_iter(torch.utils.data.dataset.Dataset):
