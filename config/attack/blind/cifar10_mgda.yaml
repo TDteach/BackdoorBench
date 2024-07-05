@@ -1,9 +1,9 @@
 #task: Cifar10
 #synthesizer: Pattern
 #
-#batch_size: 64
-#test_batch_size: 100
-#lr: 0.1
+# batch_size: 64
+# test_batch_size: 100
+# lr: 0.1
 #momentum: 0.9
 #decay: 0.0005
 #epochs: 200
@@ -23,20 +23,20 @@
 #
 #loss_balance: MGDA
 #mgda_normalize: loss+
-batch_size: 64
-lr: 0.1
-epochs: 200
-cos_t_max: 200 # the T_max in CosineAnnealingLR
+#batch_size: 64
+#lr: 0.1
+#epochs: 100 # 200
+cos_t_max: 100 # 200 the T_max in CosineAnnealingLR
 attack_label_trans: all2one
-attack_target: 8
+attack_target: 0
 attack: blind
 #attack_trigger_img_path: ../resource/blended/hello_kitty.jpeg
 #attack_train_blended_alpha: 0.15
 #attack_test_blended_alpha: 0.15
-weight_loss_balance_mode: MGDA
+weight_loss_balance_mode: MGDA #MGDA or fixed
 mgda_normalize: loss+
-fix_scale_normal_weight: 1.0
-fix_scale_backdoor_weight: 0.9
+fix_scale_normal_weight: 0.9 # 1.0
+fix_scale_backdoor_weight: 0.1 # 0.9
 batch_history_len: 1000
 backdoor_batch_loss_threshold: 1.0
 model: blind_resnet18

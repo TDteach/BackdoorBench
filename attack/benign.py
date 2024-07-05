@@ -32,6 +32,7 @@ from utils.save_load_attack import save_attack_result
 from attack.prototype import NormalCase
 from utils.trainer_cls import PureCleanModelTrainer
 from utils.bd_dataset_v2 import prepro_cls_DatasetBD_v2, dataset_wrapper_with_transform
+from torch.utils.data.dataloader import DataLoader
 
 
 class Benign(NormalCase):
@@ -146,7 +147,6 @@ class Benign(NormalCase):
 
         optimizer, scheduler = argparser_opt_scheduler(self.net, args)
 
-        from torch.utils.data.dataloader import DataLoader
         trainer.train_with_test_each_epoch_on_mix(
             DataLoader(clean_train_dataset_with_transform, batch_size=args.batch_size, shuffle=True, drop_last=True,
                        pin_memory=args.pin_memory, num_workers=args.num_workers, ),

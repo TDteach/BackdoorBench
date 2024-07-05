@@ -1,0 +1,4 @@
+client_optimizer: sgd
+client_optimizer_parameters:
+    momentum: 0.9
+    weight_decay: 0.0005

@@ -32,8 +32,15 @@ class defense(object):
         parser.add_argument('--attack_folder', type=str, help='path to folder containing attack model')
         parser.add_argument('--yaml_path', type=str, default="./config/defense/default/config.yaml", help='the path of yaml')
 
+        parser.add_argument("--dataset_path", type=str, help='the location of data')
+        parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
+        parser.add_argument('--batch_size', type=int)
+        parser.add_argument("--num_workers", type=int)
+
+        parser.add_argument('--log', type=str, help='the location of log')
         parser.add_argument("--log_level", dest="logLevel", default="INFO", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help="Set the logging level")
         parser.add_argument('--random_seed', type=int, help='random seed', default=0)
+        parser.add_argument('--result_file', type=str, help='the location of result')
         return parser
 
     def add_arguments(parser):

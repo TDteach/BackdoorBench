@@ -300,23 +300,11 @@ class abl(defense):
                 self.set_result(args.result_file)
 
     def add_arguments(parser):
-        parser.add_argument('--device', type=str, help='cuda, cpu')
-        parser.add_argument("-pm","--pin_memory", type=lambda x: str(x) in ['True', 'true', '1'], help = "dataloader pin_memory")
-        parser.add_argument("-nb","--non_blocking", type=lambda x: str(x) in ['True', 'true', '1'], help = ".to(), set the non_blocking = ?")
-        parser.add_argument("-pf", '--prefetch', type=lambda x: str(x) in ['True', 'true', '1'], help='use prefetch')
-        parser.add_argument('--amp', type=lambda x: str(x) in ['True','true','1'])
-
         parser.add_argument('--checkpoint_load', type=str, help='the location of load model')
         parser.add_argument('--checkpoint_save', type=str, help='the location of checkpoint where model is saved')
-        parser.add_argument('--log', type=str, help='the location of log')
-        parser.add_argument("--dataset_path", type=str, help='the location of data')
-        parser.add_argument('--dataset', type=str, help='mnist, cifar10, cifar100, gtrsb, tiny') 
-        parser.add_argument('--result_file', type=str, help='the location of result')
         parser.add_argument('--interval', type=int, help='frequency of save model')
     
         parser.add_argument('--epochs', type=int)
-        parser.add_argument('--batch_size', type=int)
-        parser.add_argument("--num_workers", type=float)
         parser.add_argument('--lr', type=float)
         parser.add_argument('--lr_scheduler', type=str, help='the scheduler of lr')
         parser.add_argument('--steplr_stepsize', type=int)
@@ -329,8 +317,6 @@ class abl(defense):
         parser.add_argument('--wd', type=float, help='weight decay of sgd')
         parser.add_argument('--frequency_save', type=int,
                         help=' frequency_save, 0 is never')
-
-        parser.add_argument('--yaml_path', type=str, default="./config/defense/abl/config.yaml", help='the path of yaml')
 
         #set the parameter for the abl defense
         parser.add_argument('--tuning_epochs', type=int, help='number of tune epochs to run')

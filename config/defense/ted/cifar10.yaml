@@ -1,0 +1,15 @@
+checkpoint_save:
+log:
+device: 'cuda'
+amp: True
+pin_memory: True
+non_blocking: True
+prefetch: False
+
+dataset_path: './data'
+dataset: 'cifar10'
+
+batch_size: 256
+num_workers: 4
+
+random_seed: 0

@@ -445,7 +445,7 @@ class poison_ink(BadNet):
         #     model = models.__dict__[args.arch](num_classes=num_classes)
 
         # model = torch.nn.DataParallel(model).cuda()
-        model = self.net.cuda()
+        model = self.net.to(args.device)
         # criterion = nn.CrossEntropyLoss()
         # optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 

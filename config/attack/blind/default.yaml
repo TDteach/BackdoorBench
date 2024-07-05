@@ -13,7 +13,7 @@ attack: blind
 #      backdoor: 0.05
 weight_loss_balance_mode: fixed
 mgda_normalize: loss+
-fix_scale_normal_weight: 1.0
-fix_scale_backdoor_weight: 0.9
+fix_scale_normal_weight: 0.99
+fix_scale_backdoor_weight: 0.01
 batch_history_len: 1000
 backdoor_batch_loss_threshold: 1.0
