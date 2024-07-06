@@ -7,8 +7,8 @@ attack_label_trans: all2one
 attack_target: 0
 eps: 0.1 #0.01 original
 test_eps: 0.01
-alpha: 0.9 # 0.5 original
-test_alpha: 0.9 # 0.5 original
+alpha: 0.99 # 0.5 original
+test_alpha: 0.99 # 0.5 original
 
 optimizer: sgd
 both_train_epochs: 50

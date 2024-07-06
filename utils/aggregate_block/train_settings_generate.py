@@ -30,10 +30,11 @@ def argparser_criterion(args):
         )
     return criterion
 
-def argparser_opt_scheduler(model, args):
+def argparser_opt_scheduler(model, args, param=None):
     # idea: given model and args, return the optimizer and scheduler you choose to use
 
-    param = filter(lambda p: p.requires_grad, model.parameters())
+    if param is None:
+        param = filter(lambda p: p.requires_grad, model.parameters())
 
     optim_param = dict()
     optim_name = None

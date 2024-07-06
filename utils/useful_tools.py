@@ -1,6 +1,34 @@
 import os
 import torch
 
+def get_clip_image(args):
+    if args.dataset in ['tiny-imagenet', 'tiny-imagenet32', 'tiny']:
+        xmin, xmax = -2.1179039478302, 2.640000104904175
+
+        def clip_image(x):
+            return torch.clip(x, xmin, xmax)
+    elif args.dataset == 'cifar10':
+        xmin, xmax = -1.9895, 2.1309
+
+        def clip_image(x):
+            return torch.clip(x, xmin, xmax)
+    elif args.dataset == 'cifar100':
+        xmin, xmax = -1.8974, 2.0243
+
+        def clip_image(x):
+            return torch.clip(x, xmin, xmax)
+    elif args.dataset == 'mnist':
+        def clip_image(x):
+            return torch.clip(x, -1.0, 1.0)
+    elif args.dataset == 'gtsrb':
+        def clip_image(x):
+            return torch.clip(x, 0.0, 1.0)
+    else:
+        raise Exception(f'Invalid dataset: {args.dataset}')
+    return clip_image
+ 
+
+
 def absolute_to_relative_path(abs_path, after='BackdoorBench'):
     p = os.path.normpath(abs_path)
     ds = p.split(os.sep)

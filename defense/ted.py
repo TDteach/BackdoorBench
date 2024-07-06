@@ -1,30 +1,16 @@
 '''
-Anti-backdoor learning: Training clean models on poisoned data.
-This file is modified based on the following source:
-link : https://github.com/bboylyg/ABL.
-The defense method is called abl.
-@article{li2021anti,
-            title={Anti-backdoor learning: Training clean models on poisoned data},
-            author={Li, Yige and Lyu, Xixiang and Koren, Nodens and Lyu, Lingjuan and Li, Bo and Ma, Xingjun},
-            journal={Advances in Neural Information Processing Systems},
-            volume={34},
-            pages={14900--14912},
-            year={2021}
-            }
-The update include:
-    1. data preprocess and dataset setting
-    2. model setting
-    3. args and config
-    4. save process
-    5. new standard: robust accuracy
-basic sturcture for defense method:
-    1. basic setting: args
-    2. attack result(model, train data, test data)
-    3. abl defense:
-        a. pre-train model
-        b. isolate the special data(loss is low) as backdoor data
-        c. unlearn the backdoor data and learn the remaining data
-    4. test the result and get ASR, ACC, RC 
+Robust Backdoor Detection for Deep Learning via Topological Evolution Dynamics
+the code is modifed from 
+https://github.com/tedbackdoordefense/ted
+The defense method is called TED.
+@inproceedings{mo2024robust,
+  title={Robust backdoor detection for deep learning via topological evolution dynamics},
+  author={Mo, Xiaoxing and Zhang, Yechao and Zhang, Leo Yu and Luo, Wei and Sun, Nan and Hu, Shengshan and Gao, Shang and Xiang, Yang},
+  booktitle={2024 IEEE Symposium on Security and Privacy (SP)},
+  pages={171--171},
+  year={2024},
+  organization={IEEE Computer Society}
+}
 '''
 
 
@@ -155,60 +141,7 @@ def get_rankings(model, dataloader, criterion, reference_activations=None, refer
 
 
 
-
-
 class TED(defense):
-    r"""Anti-backdoor learning: Training clean models on poisoned data.
-    
-    basic structure: 
-    
-    1. config args, save_path, fix random seed
-    2. load the backdoor attack data and backdoor test data
-    3. abl defense:
-        a. pre-train model
-        b. isolate the special data(loss is low) as backdoor data
-        c. unlearn the backdoor data and learn the remaining data
-    4. test the result and get ASR, ACC, RC 
-       
-    .. code-block:: python
-    
-        parser = argparse.ArgumentParser(description=sys.argv[0])
-        abl.add_arguments(parser)
-        args = parser.parse_args()
-        abl_method = abl(args)
-        if "result_file" not in args.__dict__:
-            args.result_file = 'one_epochs_debug_badnet_attack'
-        elif args.result_file is None:
-            args.result_file = 'one_epochs_debug_badnet_attack'
-        result = abl_method.defense(args.result_file)
-    
-    .. Note::
-        @article{li2021anti,
-            title={Anti-backdoor learning: Training clean models on poisoned data},
-            author={Li, Yige and Lyu, Xixiang and Koren, Nodens and Lyu, Lingjuan and Li, Bo and Ma, Xingjun},
-            journal={Advances in Neural Information Processing Systems},
-            volume={34},
-            pages={14900--14912},
-            year={2021}
-            }
-
-    Args:
-        baisc args: in the base class
-        tuning_epochs (int): number of the first tuning epochs to run
-        finetuning_ascent_model (bool): whether finetuning model after sperate the poisoned data
-        finetuning_epochs (int): number of the finetuning epochs to run
-        unlearning_epochs (int): number of the unlearning epochs to run
-        lr_finetuning_init (float): initial finetuning learning rate
-        lr_unlearning_init (float): initial unlearning learning rate
-        momentum (float): momentum of sgd during the process of finetuning and unlearning
-        weight_decay (float): weight decay of sgd during the process of finetuning and unlearning
-        isolation_ratio (float): ratio of isolation data from the whole poisoned data
-        gradient_ascent_type (str): type of gradient ascent (LGA, Flooding)
-        gamma (float): value of gamma for LGA
-        flooding (float): value of flooding for Flooding
-        
-    """ 
-    
 
     def __init__(self,args):
         self.args = args
@@ -257,7 +190,7 @@ class TED(defense):
         for i in range(len(clean_test_dataset_with_transform)):
             _, lb = clean_test_dataset_with_transform[i]
             if cls_needed[lb] > 0:
-                ref_index.append(lb)
+                ref_index.append(i)
                 cls_needed[lb] -= 1
         for cls in range(num_classes):
             if cls_needed[cls] > 0:
@@ -291,17 +224,14 @@ class TED(defense):
         print(bd_rankings)
         print(np.mean(np.sum(bd_rankings,axis=1)))
 
-        # pca = PCA(contamination=0.01, n_components='mle')
-        # pca.fit(reference_rankings)
+        pca = PCA(contamination=0.01, n_components='mle')
+        pca.fit(reference_rankings)
 
         n_ref, n_bd = len(reference_rankings), len(bd_rankings)
         all_labels = np.concatenate([np.zeros(n_ref), np.ones(n_bd)], axis=0)
         all_rankings = np.concatenate([reference_rankings, bd_rankings], axis=0)
-        # all_scores = pca.decision_function(all_rankings)
-        # all_preds = pca.predict(all_rankings)
-        all_scores = np.sum(all_rankings, axis=1)
-        all_preds = all_scores > np.max(all_scores[:n_ref])
-
+        all_scores = pca.decision_function(all_rankings)
+        all_preds = pca.predict(all_rankings)
 
         fpr, tpr, thresholds = roc_curve(all_labels, all_scores, pos_label=1)
         print("AUC:", auc(fpr, tpr))
