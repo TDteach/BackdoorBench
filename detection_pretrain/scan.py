@@ -78,7 +78,9 @@ def get_features_labels(args, model, target_layer, data_loader):
             global feature_vector
             inputs, targets = inputs.to(args.device), targets.to(args.device)
             outputs = model(inputs)
-            feature_vector = torch.sum(torch.flatten(feature_vector, 2), 2)
+            if len(feature_vector.shape) > 2:
+                feature_vector = torch.sum(torch.flatten(feature_vector, 2), 2)
+            # feature_vector = torch.flatten(feature_vector, 1)
             current_feature = feature_vector.detach().cpu().numpy()
             current_labels = targets.cpu().numpy()
 
@@ -92,16 +94,17 @@ def get_features_labels(args, model, target_layer, data_loader):
 
     return features, labels
 
-EPS = 1e-5
+EPS = 1e-4
 class SCAn:
-    def __init__(self):
+    def __init__(self, args):
+        self.args = args
         pass
 
     def calc_final_score(self, lc_model=None):
         if lc_model is None:
             lc_model = self.lc_model
         sts = lc_model['sts']
-        y = sts[:, 1]
+        y = sts[:, 1].cpu().numpy()
         ai = self.calc_anomaly_index(y / np.max(y))
         return ai
 
@@ -111,59 +114,75 @@ class SCAn:
         mm = np.median(b) * 1.4826
         index = b / mm
         return index
-
+    
+    def calc_matrix_inverse(self, ma):
+        # ma_numpy = ma.cpu().numpy()
+        # rst_numpy = np.linalg.pinv(ma_numpy)
+        # rst = torch.from_numpy(rst_numpy).to(self.args.device)
+        rst = torch.linalg.pinv(ma) # it's strange that torch is much slower than numpy in linalg.pinv
+        return rst.to(torch.float64)
+    
     def build_global_model(self, reprs, labels, n_classes):
+        reprs = torch.from_numpy(reprs).to(self.args.device)
+        labels = torch.from_numpy(labels).to(self.args.device)
+        reprs = reprs.to(torch.float64)
+        labels = labels.to(torch.long)
+
         N = reprs.shape[0]  # num_samples
         M = reprs.shape[1]  # len_features
         L = n_classes
 
-        mean_a = np.mean(reprs, axis=0)
+        mean_a = torch.mean(reprs, dim=0)
         X = reprs - mean_a
 
-        cnt_L = np.zeros(L)
-        mean_f = np.zeros([L, M])
+        cnt_L = torch.zeros(L, device=self.args.device, dtype=torch.long)
+        mean_f = torch.zeros([L, M], device=self.args.device, dtype=torch.float64)
         for k in range(L):
             idx = (labels == k)
-            cnt_L[k] = np.sum(idx)
-            mean_f[k] = np.mean(X[idx], axis=0)
+            cnt_L[k] = torch.sum(idx)
+            mean_f[k] = torch.mean(X[idx], dim=0)
 
-        u = np.zeros([N, M])
-        e = np.zeros([N, M])
+        u = torch.zeros([N, M], device=self.args.device, dtype=torch.float64)
+        e = torch.zeros([N, M], device=self.args.device, dtype=torch.float64)
         for i in range(N):
             k = labels[i]
             u[i] = mean_f[k]  # class-mean
             e[i] = X[i] - u[i]  # sample-variantion
-        Su = np.cov(np.transpose(u))
-        Se = np.cov(np.transpose(e))
+        Su = torch.cov(u.T)
+        Se = torch.cov(e.T)
 
         # EM
         dist_Su = 1e5
         dist_Se = 1e5
         n_iters = 0
+        time_list = []
         while (dist_Su + dist_Se > EPS) and (n_iters < 100):
+            st_time = time.perf_counter()
             n_iters += 1
             last_Su = Su
             last_Se = Se
 
-            F = np.linalg.pinv(Se)
-            SuF = np.matmul(Su, F)
+            # F = torch.linalg.pinv(Se)
+            F = self.calc_matrix_inverse(Se)
+            SuF = torch.matmul(Su, F)
 
             G_set = list()
             for k in range(L):
-                G = -np.linalg.pinv(cnt_L[k] * Su + Se)
-                G = np.matmul(G, SuF)
+                # G = -torch.linalg.pinv(cnt_L[k] * Su + Se)
+                G = -self.calc_matrix_inverse(cnt_L[k] * Su + Se)
+                G = torch.matmul(G, SuF)
                 G_set.append(G)
 
-            u_m = np.zeros([L, M])
-            e = np.zeros([N, M])
-            u = np.zeros([N, M])
+            u_m = torch.zeros([L, M], device=self.args.device, dtype=torch.float64)
+            e = torch.zeros([N, M], device=self.args.device, dtype=torch.float64)
+            u = torch.zeros([N, M], device=self.args.device, dtype=torch.float64)
 
             for i in range(N):
-                vec = X[i]
+                vec = X[i:i+1]
                 k = labels[i]
                 G = G_set[k]
-                dd = np.matmul(np.matmul(Se, G), np.transpose(vec))
-                u_m[k] = u_m[k] - np.transpose(dd)
+                dd = torch.matmul(torch.matmul(Se, G), vec.T)
+                u_m[k] = u_m[k] - dd.T
 
             for i in range(N):
                 vec = X[i]
@@ -172,15 +191,18 @@ class SCAn:
                 u[i] = u_m[k]
 
             # max-step
-            Su = np.cov(np.transpose(u))
-            Se = np.cov(np.transpose(e))
+            Su = torch.cov(u.T)
+            Se = torch.cov(e.T)
 
             dif_Su = Su - last_Su
             dif_Se = Se - last_Se
 
-            dist_Su = np.linalg.norm(dif_Su)
-            dist_Se = np.linalg.norm(dif_Se)
-            # print(dist_Su,dist_Se)
+            dist_Su = torch.norm(dif_Su)
+            dist_Se = torch.norm(dif_Se)
+            ed_time = time.perf_counter()
+            time_list.append(ed_time-st_time)
+            # print(n_iters, time_list[-1], np.mean(time_list))
+            print(f'iter {n_iters}:', dist_Su.item(), dist_Se.item(), f'using {time_list[-1]} seconds')
 
         gb_model = dict()
         gb_model['Su'] = Su
@@ -190,20 +212,26 @@ class SCAn:
         return gb_model
 
     def build_local_model(self, reprs, labels, gb_model, n_classes):
+        reprs = torch.from_numpy(reprs).to(self.args.device)
+        labels = torch.from_numpy(labels).to(self.args.device)
+        reprs = reprs.to(torch.float64)
+        labels = labels.to(torch.long)
+
         Su = gb_model['Su']
         Se = gb_model['Se']
 
-        F = np.linalg.pinv(Se)
+        # F = torch.linalg.pinv(Se)
+        F = self.calc_matrix_inverse(Se)
         N = reprs.shape[0]
         M = reprs.shape[1]
         L = n_classes
 
-        mean_a = np.mean(reprs, axis=0)
+        mean_a = torch.mean(reprs, dim=0)
         X = reprs - mean_a
 
-        class_score = np.zeros([L, 3])
-        u1 = np.zeros([L, M])
-        u2 = np.zeros([L, M])
+        class_score = torch.zeros([L, 3], device=self.args.device, dtype=torch.float64)
+        u1 = torch.zeros([L, M], device=self.args.device, dtype=torch.float64)
+        u2 = torch.zeros([L, M], device=self.args.device, dtype=torch.float64)
         split_rst = list()
 
         for k in range(L):
@@ -214,9 +242,12 @@ class SCAn:
 
             i_sc = self.calc_test(cX, Su, Se, F, subg, i_u1, i_u2)
             split_rst.append(subg)
-            u1[k] = i_u1
-            u2[k] = i_u2
-            class_score[k] = [k, i_sc[0][0], np.sum(selected_idx)]
+            u1[k] = i_u1.view(-1)
+            u2[k] = i_u2.view(-1)
+            class_score[k, 0] = k
+            class_score[k, 1] = i_sc[0][0].item()
+            class_score[k, 2] = torch.sum(selected_idx).item()
+            print('[class-%d] outlier_original_score = %f, calculated on %d samples' % (k, class_score[k,1], class_score[k,2]) )
 
         lc_model = dict()
         lc_model['sts'] = class_score
@@ -230,44 +261,46 @@ class SCAn:
     def find_split(self, X, F):
         N = X.shape[0]
         M = X.shape[1]
-        subg = np.random.rand(N)
+        subg = torch.rand(N, device=self.args.device, dtype=torch.float64)
 
         if (N == 1):
             subg[0] = 0
-            return (subg, X.copy(), X.copy())
+            return (subg, X.clone(), X.clone())
 
-        if np.sum(subg >= 0.5) == 0:
+        if torch.sum(subg >= 0.5) == 0:
             subg[0] = 1
-        if np.sum(subg < 0.5) == 0:
+        if torch.sum(subg < 0.5) == 0:
             subg[0] = 0
-        last_z1 = -np.ones(N)
+        last_z1 = -torch.ones(N, device=self.args.device, dtype=torch.float64)
 
         # EM
         steps = 0
-        while (np.linalg.norm(subg - last_z1) > EPS) and (np.linalg.norm((1 - subg) - last_z1) > EPS) and (steps < 100):
+        while (torch.norm(subg - last_z1) > EPS) and (torch.norm((1 - subg) - last_z1) > EPS) and (steps < 100):
             steps += 1
-            last_z1 = subg.copy()
+            last_z1 = subg.clone()
 
             # max-step
             # calc u1 and u2
             idx1 = (subg >= 0.5)
             idx2 = (subg < 0.5)
-            if (np.sum(idx1) == 0) or (np.sum(idx2) == 0):
+            if (torch.sum(idx1) == 0) or (torch.sum(idx2) == 0):
                 break
-            if np.sum(idx1) == 1:
+            if torch.sum(idx1) == 1:
                 u1 = X[idx1]
             else:
-                u1 = np.mean(X[idx1], axis=0)
-            if np.sum(idx2) == 1:
+                u1 = torch.mean(X[idx1], dim=0)
+            if torch.sum(idx2) == 1:
                 u2 = X[idx2]
             else:
-                u2 = np.mean(X[idx2], axis=0)
+                u2 = torch.mean(X[idx2], dim=0)
 
-            bias = np.matmul(np.matmul(u1, F), np.transpose(u1)) - np.matmul(np.matmul(u2, F), np.transpose(u2))
+            u1 = u1.view([1,-1])
+            u2 = u2.view([1,-1])
+            bias = torch.matmul(torch.matmul(u1, F), u1.T) - torch.matmul(torch.matmul(u2, F), u2.T)
             e2 = u1 - u2  # (64,1)
             for i in range(N):
-                e1 = X[i]
-                delta = np.matmul(np.matmul(e1, F), np.transpose(e2))
+                e1 = X[i:i+1]
+                delta = torch.matmul(torch.matmul(e1, F), e2.T)
                 if bias - 2 * delta < 0:
                     subg[i] = 1
                 else:
@@ -279,27 +312,28 @@ class SCAn:
         N = X.shape[0]
         M = X.shape[1]
 
-        G = -np.linalg.pinv(N * Su + Se)
-        mu = np.zeros([1, M])
-        SeG = np.matmul(Se,G)
+        # G = -torch.linalg.pinv(N * Su + Se)
+        G = -self.calc_matrix_inverse(N * Su + Se)
+        mu = torch.zeros([1, M], device=self.args.device, dtype=torch.float64)
+        SeG = torch.matmul(Se,G)
         for i in range(N):
-            vec = X[i]
-            dd = np.matmul(SeG, np.transpose(vec))
-            mu = mu - dd
+            vec = X[i:i+1]
+            dd = torch.matmul(SeG, vec.T)
+            mu = mu - dd.T
 
-        b1 = np.matmul(np.matmul(mu, F), np.transpose(mu)) - np.matmul(np.matmul(u1, F), np.transpose(u1))
-        b2 = np.matmul(np.matmul(mu, F), np.transpose(mu)) - np.matmul(np.matmul(u2, F), np.transpose(u2))
-        n1 = np.sum(subg >= 0.5)
+        b1 = torch.matmul(torch.matmul(mu, F), mu.T) - torch.matmul(torch.matmul(u1, F), u1.T)
+        b2 = torch.matmul(torch.matmul(mu, F), mu.T) - torch.matmul(torch.matmul(u2, F), u2.T)
+        n1 = torch.sum(subg >= 0.5)
         n2 = N - n1
         sc = n1 * b1 + n2 * b2
 
         for i in range(N):
-            e1 = X[i]
+            e1 = X[i:i+1]
             if subg[i] >= 0.5:
                 e2 = mu - u1
             else:
                 e2 = mu - u2
-            sc -= 2 * np.matmul(np.matmul(e1, F), np.transpose(e2))
+            sc -= 2 * torch.matmul(torch.matmul(e1, F), e2.T)
 
         return sc / N
 
@@ -446,7 +480,12 @@ class scan(defense):
         pindex = np.where(np.array(bd_train_dataset.poison_indicator) == 1)[0]
 
         module_dict = dict(model.named_modules())
-        target_layer = module_dict[args.target_layer]
+        try:
+            target_layer = module_dict[args.target_layer]
+        except:
+            logging.error(f'has not found target_layer in following modules:')
+            logging.error(module_dict.keys())
+            raise KeyError
 
         clean_test_dataset = self.result['clean_test'].wrapped_dataset
 
@@ -469,6 +508,7 @@ class scan(defense):
         clean_dataset = xy_iter(image_c, label_c,transform=test_tran)
         clean_dataloader = DataLoader(clean_dataset, self.args.batch_size, shuffle=True)
         clean_features,clean_labels = get_features_labels(args, model, target_layer, clean_dataloader)
+        logging.info('clean_features has been collected')
 
         ### c. load training dataset with poison samples
         images_poison = []
@@ -481,6 +521,7 @@ class scan(defense):
         train_dataset = xy_iter(images_poison, labels_poison,transform=test_tran)
         train_dataloader = DataLoader(train_dataset, self.args.batch_size, shuffle=False)
         train_features, train_labels = get_features_labels(args, model, target_layer, train_dataloader)
+        logging.info('train_features has been collected')
         
         feats_inspection = np.array(train_features)
         class_indices_inspection = np.array(train_labels)
@@ -488,7 +529,7 @@ class scan(defense):
         feats_clean = np.array(clean_features)
         class_indices_clean = np.array(clean_labels)
 
-        scan = SCAn()
+        scan = SCAn(self.args)
         gb_model = scan.build_global_model(feats_clean, class_indices_clean, self.args.num_classes)
         size_inspection_set = len(feats_inspection)
         feats_all = np.concatenate([feats_inspection, feats_clean])

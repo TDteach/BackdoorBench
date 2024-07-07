@@ -64,6 +64,8 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.distributions.mixture_same_family import MixtureSameFamily
 from torch.distributions.categorical import Categorical
 
+from utils.useful_tools import get_clip_image
+
 def build_gmm(list_mean, list_cov):
     if isinstance(list_mean, list):
         list_mean = torch.stack(list_mean, 0)
@@ -310,127 +312,96 @@ def calc_metrics(args, benign_model, attack_model, dataloader, criterion):
     print('Helliger distance:', Hellinger_dis, np.sqrt(2)*Hellinger_dis)
 
 
-def calc_wasserstein_metrics_GAN(args, benign_model, attack_model, dataloader):
-
-    trans_model = train_trans_model_V2(args, benign_model, attack_model)
-
-    benign_record_array = []
-    benign_linear, benign_hook = register_hook_before_final(benign_model, benign_record_array, detach=True, clone=True)
-    attack_record_array = []
-    attack_linear, attack_hook = register_hook_before_final(attack_model, attack_record_array, detach=True, clone=True)
-    data_shape = [args.input_channel, args.input_width, args.input_height]
-
-    random_dataset = RandomDataset(data_shape=data_shape, 
-                                    len=10000, 
-                                    random_type='normal', 
-                                    num_classes=args.num_classes,
-                                    fully_random=True,
-                                    )
-    random_dataloader = DataLoader(random_dataset, batch_size=args.batch_size, shuffle=False,
-                                    drop_last=False,
-                                    pin_memory=args.pin_memory, num_workers=args.num_workers, )
-    
 
 
-    def _build_gsw_model(fet_dim, epochs, args):
-        gsw_model = MLP(din=fet_dim, dout=fet_dim, num_filters=128, depth=2, regularize_weight=True)
-        # optimizer = torch.optim.Adam(gsw_model.parameters(), lr=2e-4, betas=(0.5,0.999))
-        optimizer = torch.optim.Adam(gsw_model.parameters(), lr=1e-3, betas=(0.8, 0.95))
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
-        gsw_model.to(args.device, non_blocking=args.non_blocking)
-        gsw_model.train()
-        return gsw_model, optimizer, scheduler
-    
-    def _wasserstein_loss(X, Y, model):
-        Xslices = model(X)
-        Yslices = model(Y)
+class Generator(nn.Module):
+    def __init__(self, in_channels=64, out_channels=3):
+        super(Generator, self).__init__()
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(in_channels, 32, (4, 4), stride=(2, 2), padding=(1, 1)),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 16, (4, 4), stride=(2, 2), padding=(1, 1)),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.ConvTranspose2d(16, 8, (4, 4), stride=(2, 2), padding=(1, 1)),
+            nn.BatchNorm2d(8),
+            nn.ReLU(),
+            nn.ConvTranspose2d(8, out_channels, (4, 4), stride=(2, 2), padding=(1, 1)),
+            nn.Tanh()
+        )
 
-        dist = torch.mean(Xslices) - torch.mean(Yslices)
-        return dist
-    
-    def _wasserstein1_dist(X, Y, model):
-        Xslices = model(X)
-        Yslices = model(Y)
-        Xslices_sorted = torch.sort(Xslices, dim=0)[0]
-        Yslices_sorted = torch.sort(Yslices, dim=0)[0]
+    def forward(self, x):
+        x = self.decoder(x)
+        return x
 
-        dist = torch.mean(torch.abs(Xslices_sorted-Yslices_sorted))
-        return dist
 
-    trans_optimizer = torch.optim.Adam(trans_model.parameters(), lr=2e-4, betas=(0.5,0.999))
 
-    epochs = 100
+
+def calc_wasserstein_metrics_GAN(args, benign_model, attack_model, ref_model):
+    in_channels = 64
+    init_dim = in_channels*2*2
+    batch_shape = [args.batch_size, in_channels, 2, 2]
+
+    attack_model.eval().to(args.device)
+    benign_model.eval().to(args.device)
+    ref_model.eval().to(args.device)
+
+    G = Generator(in_channels)
+    G_optimizer = torch.optim.Adam(G.parameters(), lr=2e-4, betas=(0.5,0.99))
+    G.train()
+    G.to(args.device)
+
+    clip_image_func = get_clip_image(args)
+
+    epochs = 10
     fet_dim = None
     gsw_model, optimizer, scheduler = None, None, None
     for e in range(epochs):
         lv_list = []
-        for batch_idx, (x, target, *additional_info) in enumerate(random_dataloader):
-            x = x.to(args.device, non_blocking=args.non_blocking)
+        for batch_idx in range(50):
+            x = torch.randn(batch_shape).to(args.device)
+            forge_input = G(x)
+            forge_input = clip_image_func(forge_input*2)
 
-            with torch.no_grad():
-                benign_model(x)
-                attack_model(x)
+            benign_probs = torch.softmax(benign_model(forge_input), dim=-1)
+            attack_probs = torch.softmax(attack_model(forge_input), dim=-1)
+            ref_probs = torch.softmax(ref_model(forge_input), dim=-1)
 
-                benign_fet = benign_record_array[-1]
-                attack_fet = attack_record_array[-1]
+            loss_att = (attack_probs - benign_probs).pow(2).mean()
+            loss_ref = (ref_probs - benign_probs).pow(2).mean()
+            loss = loss_ref - loss_att
 
-                benign_record_array.clear()
-                attack_record_array.clear()
-
-                trans_fet = trans_model(benign_fet)
-
-            if fet_dim is None:
-                fet_dim = benign_fet.shape[-1]
-                gsw_model, optimizer, scheduler = _build_gsw_model(fet_dim, epochs, args)
-
-            optimizer.zero_grad()
-            loss = -1 * _wasserstein_loss(trans_fet, attack_fet, gsw_model)
-
+            G_optimizer.zero_grad()
             loss.backward()
-            optimizer.step()
+            G_optimizer.step()
 
             lv = loss.item()
             lv_list.append(lv)
 
-            if batch_idx%10 != 0:
-                continue
-            
-            trans_optimizer.zero_grad()
-            trans_fet = trans_model(benign_fet)
-            loss_trans = torch.mean(gsw_model(trans_fet))
-
-            loss_trans.backward()
-            trans_optimizer.step()
-        
         print(f'epoch {e}:', np.mean(lv_list))
 
-    gsw_model.eval()
-    dist_list = []
+    G.eval()
+    lv_list = []
     with torch.no_grad():
-        for batch_idx, (x, target, *additional_info) in enumerate(random_dataloader):
-            x = x.to(args.device, non_blocking=args.non_blocking)
+        for batch_idx in range(100):
+            x = torch.randn(batch_shape).to(args.device)
+            forge_input = G(x)
+            forge_input = clip_image_func(forge_input*2)
 
-            benign_model(x)
-            attack_model(x)
+            benign_probs = torch.softmax(benign_model(forge_input), dim=-1)
+            attack_probs = torch.softmax(attack_model(forge_input), dim=-1)
 
-            benign_fet = benign_record_array[-1]
-            attack_fet = attack_record_array[-1]
+            loss = (attack_probs - benign_probs).abs().mean()
+            lv = loss.item()
+            lv_list.append(lv)
 
-            benign_record_array.clear()
-            attack_record_array.clear()
-
-            trans_fet = trans_model(benign_fet)
-            dist = _wasserstein1_dist(trans_fet, attack_fet, gsw_model)
-            dist_list.append(dist.item())
-
-
-    benign_hook.remove()
-    attack_hook.remove()
-
-    w1_dist = np.mean(dist_list)
+    w1_dist = np.mean(lv_list)
     print('W1 dist:', w1_dist)
     
     return w1_dist
+
+
 
 
 
@@ -490,22 +461,26 @@ def calc_wasserstein_metrics(args, benign_model, attack_model, dataloader):
             x = x.to(args.device, non_blocking=args.non_blocking)
 
             with torch.no_grad():
-                benign_model(x)
-                attack_model(x)
+                benign_logits = benign_model(x)
+                attack_logits = attack_model(x)
+                benign_probs = torch.softmax(benign_logits, dim=-1)
+                attack_probs = torch.softmax(attack_logits, dim=-1)
 
-                benign_fet = benign_record_array[-1]
-                attack_fet = attack_record_array[-1]
+                # benign_fet = benign_record_array[-1]
+                # attack_fet = attack_record_array[-1]
 
                 benign_record_array.clear()
                 attack_record_array.clear()
 
-                trans_fet = trans_model(benign_fet)
+                # trans_fet = trans_model(benign_fet)
 
             if fet_dim is None:
-                fet_dim = benign_fet.shape[-1]
+                # fet_dim = benign_fet.shape[-1]
+                fet_dim = benign_probs.shape[-1]
                 gsw_model, optimizer, scheduler = _build_gsw_model(fet_dim, epochs, args)
 
-            loss = -1 * _wasserstein_loss(trans_fet, attack_fet, gsw_model)
+            # loss = -1 * _wasserstein_loss(trans_fet, attack_fet, gsw_model)
+            loss = -1 * _wasserstein_loss(benign_probs, attack_probs, gsw_model)
 
             optimizer.zero_grad()
             loss.backward()
@@ -519,22 +494,27 @@ def calc_wasserstein_metrics(args, benign_model, attack_model, dataloader):
 
     gsw_model.eval()
     dist_list = []
+    tvd_list = []
     with torch.no_grad():
         for batch_idx, (x, target, *additional_info) in enumerate(random_dataloader):
             x = x.to(args.device, non_blocking=args.non_blocking)
 
-            benign_model(x)
-            attack_model(x)
+            benign_logits = benign_model(x)
+            attack_logits = attack_model(x)
+            benign_probs = torch.softmax(benign_logits, dim=-1)
+            attack_probs = torch.softmax(attack_logits, dim=-1)
 
-            benign_fet = benign_record_array[-1]
-            attack_fet = attack_record_array[-1]
+            # benign_fet = benign_record_array[-1]
+            # attack_fet = attack_record_array[-1]
 
             benign_record_array.clear()
             attack_record_array.clear()
 
-            trans_fet = trans_model(benign_fet)
-            dist = _wasserstein1_dist(trans_fet, attack_fet, gsw_model)
+            # trans_fet = trans_model(benign_fet)
+            # dist = _wasserstein1_dist(trans_fet, attack_fet, gsw_model)
+            dist = _wasserstein_loss(benign_probs, attack_probs, gsw_model)
             dist_list.append(dist.item())
+            tvd_list.append((benign_probs-attack_probs).abs().mean().item())
 
 
     benign_hook.remove()
@@ -542,6 +522,7 @@ def calc_wasserstein_metrics(args, benign_model, attack_model, dataloader):
 
     w1_dist = np.mean(dist_list)
     print('W1 dist:', w1_dist)
+    print('TVD dist:', np.mean(tvd_list))
     
     return w1_dist
 
@@ -608,6 +589,7 @@ class TSA(defense):
 
     def add_arguments(parser):
         parser.add_argument('--benign_folder', type=str, help='path to folder containing reference model')
+        # parser.add_argument('--ref_folder', type=str, help='path to folder containing reference model')
         
         return parser
         
@@ -631,6 +613,9 @@ class TSA(defense):
         benign_result = self.get_attack_result(args.benign_folder)
         attack_model = attack_result['model']
         benign_model = benign_result['model']
+
+        # ref_result = self.get_attack_result(args.ref_folder)
+        # ref_model = ref_result['model']
 
         criterion = argparser_criterion(args)
 
@@ -682,6 +667,7 @@ class TSA(defense):
         calc_metrics(args, benign_model, attack_model, random_dataloader, criterion)
 
 
+        # calc_wasserstein_metrics_GAN(args, benign_model, attack_model, ref_model)
         calc_wasserstein_metrics(args, benign_model, attack_model, clean_test_dataloader)
 
 
