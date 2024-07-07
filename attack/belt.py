@@ -282,6 +282,7 @@ class Belt(NormalCase):
         parser.add_argument("--cover_rate", type=float) # default = 0.5
         parser.add_argument("--mask_rate", type=float) # default = 0.1
         parser.add_argument("--center_loss_weight", type=float) # default = 1.0
+        parser.add_argument("--center_loss_momentum", type=float) # default = 0.99
         return parser
 
     def add_bd_yaml_to_args(self, args):
