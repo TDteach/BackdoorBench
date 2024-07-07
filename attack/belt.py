@@ -403,8 +403,9 @@ class Belt(NormalCase):
                 device_ids=[int(i) for i in args.device[5:].split(",")]  # eg. "cuda:2,3,7" -> [2,3,7]
             )
 
-        trainer = BackdoorModelTrainer(
+        trainer = CenterLossTrainer(
             self.net,
+            args,
         )
 
         criterion = argparser_criterion(args)
