@@ -301,7 +301,6 @@ class abl(defense):
 
     def add_arguments(parser):
         parser.add_argument('--checkpoint_load', type=str, help='the location of load model')
-        parser.add_argument('--checkpoint_save', type=str, help='the location of checkpoint where model is saved')
         parser.add_argument('--interval', type=int, help='frequency of save model')
     
         parser.add_argument('--epochs', type=int)

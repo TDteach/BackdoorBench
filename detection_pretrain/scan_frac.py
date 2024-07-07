@@ -78,7 +78,8 @@ def get_features_labels(args, model, target_layer, data_loader):
             global feature_vector
             inputs, targets = inputs.to(args.device), targets.to(args.device)
             outputs = model(inputs)
-            feature_vector = torch.sum(torch.flatten(feature_vector, 2), 2)
+            if len(feature_vector.shape) > 2:
+                feature_vector = torch.sum(torch.flatten(feature_vector, 2), 2)
             current_feature = feature_vector.detach().cpu().numpy()
             current_labels = targets.cpu().numpy()
 
@@ -141,7 +142,9 @@ class SCAn:
         dist_Su = 1e5
         dist_Se = 1e5
         n_iters = 0
+        time_list = []
         while (dist_Su + dist_Se > EPS) and (n_iters < 100):
+            st_time = time.perf_counter()
             n_iters += 1
             last_Su = Su
             last_Se = Se
@@ -181,7 +184,9 @@ class SCAn:
 
             dist_Su = np.linalg.norm(dif_Su)
             dist_Se = np.linalg.norm(dif_Se)
-            # print(dist_Su,dist_Se)
+            ed_time = time.perf_counter()
+            time_list.append(ed_time-st_time)
+            print(n_iters, time_list[-1], np.mean(time_list))
 
         gb_model = dict()
         gb_model['Su'] = Su
@@ -218,6 +223,7 @@ class SCAn:
             u1[k] = i_u1
             u2[k] = i_u2
             class_score[k] = [k, i_sc[0][0], np.sum(selected_idx)]
+            print(class_score[k])
 
         lc_model = dict()
         lc_model['sts'] = class_score
@@ -474,6 +480,7 @@ class scan(defense):
         clean_dataset = xy_iter(image_c, label_c,transform=test_tran)
         clean_dataloader = DataLoader(clean_dataset, self.args.batch_size, shuffle=True)
         clean_features,clean_labels = get_features_labels(args, model, target_layer, clean_dataloader)
+        logging.info('clean_features has been collected')
 
         ### c. load training dataset with poison samples
         images_poison = []
@@ -486,6 +493,7 @@ class scan(defense):
         train_dataset = xy_iter(images_poison, labels_poison,transform=test_tran)
         train_dataloader = DataLoader(train_dataset, self.args.batch_size, shuffle=False)
         train_features, train_labels = get_features_labels(args, model, target_layer, train_dataloader)
+        logging.info('train_features has been collected')
         
         feats_inspection = np.array(train_features)
         class_indices_inspection = np.array(train_labels)
@@ -493,7 +501,7 @@ class scan(defense):
         feats_clean = np.array(clean_features)
         class_indices_clean = np.array(clean_labels)
 
-        scan = SCAn()
+        scan = SCAn(args)
         gb_model = scan.build_global_model(feats_clean, class_indices_clean, self.args.num_classes)
         size_inspection_set = len(feats_inspection)
         feats_all = np.concatenate([feats_inspection, feats_clean])
