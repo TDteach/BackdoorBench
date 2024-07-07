@@ -1155,7 +1155,7 @@ class ModelTrainerCLS_v2():
         else:
             logging.warning("No enough batch loss to get the one epoch loss")
 
-    def one_forward_backward(self, x, labels, device, verbose=0):
+    def one_forward_backward(self, x, labels, device, verbose=0, poison_indicator=None):
 
         self.model.train()
         self.model.to(device, non_blocking=self.non_blocking)
@@ -1718,7 +1718,7 @@ class BackdoorModelTrainer(ModelTrainerCLS_v2):
 
         for batch_idx in range(self.batch_num_per_epoch):
             x, labels, original_index, poison_indicator, original_targets  = self.get_one_batch()
-            one_batch_loss, batch_predict = self.one_forward_backward(x, labels, self.device, verbose)
+            one_batch_loss, batch_predict = self.one_forward_backward(x, labels, self.device, verbose, poison_indicator=poison_indicator)
             batch_loss_list.append(one_batch_loss)
 
             if verbose == 1:

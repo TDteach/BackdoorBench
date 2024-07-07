@@ -122,11 +122,11 @@ class defense(object):
             os.makedirs(save_path)
         # assert(os.path.exists(save_path))    
         args.save_path = save_path
-        if args.checkpoint_save is None:
+        if not hasattr(args, 'checkpoint_save') or args.checkpoint_save is None:
             args.checkpoint_save = save_path + 'checkpoint/'
             if not (os.path.exists(args.checkpoint_save)):
                 os.makedirs(args.checkpoint_save) 
-        if args.log is None:
+        if not hasattr(args, 'log') or args.log is None:
             args.log = save_path + 'log/'
             if not (os.path.exists(args.log)):
                 os.makedirs(args.log)  
