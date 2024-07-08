@@ -710,7 +710,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
     for epoch in range(start_epoch, args.both_train_epochs + 1):
         for i in range(args.train_epoch):
             logging.debug(f'===== EPOCH: {epoch}/{args.both_train_epochs + 1} CLS {i + 1}/{args.train_epoch} =====')
-            if args.avoid_clsmodel_reinitialization:
+            if not args.avoid_clsmodel_reinitialization:
                 clsoptimizer = torch.optim.SGD(params=clsmodel.parameters(), lr=args.lr)
             trainloss = train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target_transform, train_loader,
                               epoch, i, create_net, clip_image,
@@ -718,12 +718,12 @@ def main(args, clean_test_dataset_with_transform, criterion):
                               wasserstein_stuff=wasserstein_stuff)
             trainlosses.append(trainloss)
         atkmodel.load_state_dict(tgtmodel.state_dict())
-        if args.avoid_clsmodel_reinitialization:
-            scratchmodel = create_net()
-            scratchmodel.load_state_dict(clsmodel.state_dict())  # transfer from cls to scratch for testing
-        else:
+        if not args.avoid_clsmodel_reinitialization:
             clsmodel = create_net()
             scratchmodel = create_net()
+        else:
+            scratchmodel = create_net()
+            scratchmodel.load_state_dict(clsmodel.state_dict())  # transfer from cls to scratch for testing
 
         scratchmodel.eval()
         scratchmodel.to(args.device, non_blocking=args.non_blocking)
