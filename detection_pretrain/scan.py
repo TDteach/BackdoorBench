@@ -103,10 +103,15 @@ class SCAn:
     def calc_final_score(self, lc_model=None):
         if lc_model is None:
             lc_model = self.lc_model
-        sts = lc_model['sts']
-        y = sts[:, 1].cpu().numpy()
+        cls_labels = list(lc_model.keys())
+        cls_labels.sort()
+        y = []
+        for c in cls_labels:
+            y.append(lc_model[c]['score'])
+        y = np.asarray(y)
         ai = self.calc_anomaly_index(y / np.max(y))
-        return ai
+        ai_dict = {c: v for c,v in zip(cls_labels, ai)}
+        return ai_dict
 
     def calc_anomaly_index(self, a):
         ma = np.median(a)
@@ -156,6 +161,8 @@ class SCAn:
         dist_Se = 1e5
         n_iters = 0
         time_list = []
+        loss_list = []
+        min_loss_loc = None
         while (dist_Su + dist_Se > EPS) and (n_iters < 100):
             st_time = time.perf_counter()
             n_iters += 1
@@ -204,14 +211,24 @@ class SCAn:
             # print(n_iters, time_list[-1], np.mean(time_list))
             print(f'iter {n_iters}:', dist_Su.item(), dist_Se.item(), f'using {time_list[-1]} seconds')
 
-        gb_model = dict()
-        gb_model['Su'] = Su
-        gb_model['Se'] = Se
-        gb_model['mean'] = mean_f
+            loss = (dist_Su+dist_Se).item()
+            if min_loss_loc is None or loss < loss_list[min_loss_loc]:
+                min_loss_loc = len(loss_list)
+            loss_list.append(loss)
+            if len(loss_list)-min_loss_loc-1 > 5:
+                break
+
+        gb_model = {
+            'Su': Su,
+            'Se': Se,
+            'F': self.calc_matrix_inverse(Se),
+            'mean': mean_f,
+            'mean_a': mean_a,
+        }
         self.gb_model = gb_model
         return gb_model
 
-    def build_local_model(self, reprs, labels, gb_model, n_classes):
+    def build_local_model(self, reprs, labels, gb_model):
         reprs = torch.from_numpy(reprs).to(self.args.device)
         labels = torch.from_numpy(labels).to(self.args.device)
         reprs = reprs.to(torch.float64)
@@ -219,41 +236,39 @@ class SCAn:
 
         Su = gb_model['Su']
         Se = gb_model['Se']
+        F = gb_model['F']
 
         # F = torch.linalg.pinv(Se)
-        F = self.calc_matrix_inverse(Se)
         N = reprs.shape[0]
         M = reprs.shape[1]
-        L = n_classes
 
-        mean_a = torch.mean(reprs, dim=0)
+        cls_labels = np.unique(labels.cpu().numpy())
+        cls_labels.sort()
+        L = len(cls_labels)
+
+        # mean_a = torch.mean(reprs, dim=0)
+        mean_a = gb_model['mean_a']
         X = reprs - mean_a
 
-        class_score = torch.zeros([L, 3], device=self.args.device, dtype=torch.float64)
-        u1 = torch.zeros([L, M], device=self.args.device, dtype=torch.float64)
-        u2 = torch.zeros([L, M], device=self.args.device, dtype=torch.float64)
-        split_rst = list()
-
-        for k in range(L):
+        lc_model = dict()
+        for k in cls_labels:
             selected_idx = (labels == k)
             cX = X[selected_idx]
             subg, i_u1, i_u2 = self.find_split(cX, F)
             # print("subg",subg)
 
             i_sc = self.calc_test(cX, Su, Se, F, subg, i_u1, i_u2)
-            split_rst.append(subg)
-            u1[k] = i_u1.view(-1)
-            u2[k] = i_u2.view(-1)
-            class_score[k, 0] = k
-            class_score[k, 1] = i_sc[0][0].item()
-            class_score[k, 2] = torch.sum(selected_idx).item()
-            print('[class-%d] outlier_original_score = %f, calculated on %d samples' % (k, class_score[k,1], class_score[k,2]) )
 
-        lc_model = dict()
-        lc_model['sts'] = class_score
-        lc_model['mu1'] = u1
-        lc_model['mu2'] = u2
-        lc_model['subg'] = split_rst
+            _rst = {
+                'subg': subg,
+                'u1': i_u1.view(-1),
+                'u2': i_u2.view(-1),
+                'score': i_sc[0][0].item(),
+                'num': torch.sum(selected_idx).item(),
+            }
+            print('[class-%d] outlier_original_score = %f, calculated on %d samples' % (k, _rst['score'], _rst['num']) )
+
+            lc_model[k] = _rst
 
         self.lc_model = lc_model
         return lc_model
@@ -394,7 +409,7 @@ class scan(defense):
 
         parser.add_argument('--random_seed', type=int, help='random seed')
         parser.add_argument('--yaml_path', type=str, default="./config/detection/scan/cifar10.yaml", help='the path of yaml')
-        parser.add_argument('--clean_sample_num', type=int)
+        parser.add_argument('--num_samples_per_class', type=int)
         parser.add_argument('--target_layer', type=str)
 
     def set_result(self, result_file):
@@ -476,8 +491,6 @@ class scan(defense):
             model.eval()
         
         test_tran = get_transform(self.args.dataset, *([self.args.input_height,self.args.input_width]) , train = False)
-        bd_train_dataset = self.result['bd_train'].wrapped_dataset
-        pindex = np.where(np.array(bd_train_dataset.poison_indicator) == 1)[0]
 
         module_dict = dict(model.named_modules())
         try:
@@ -487,56 +500,123 @@ class scan(defense):
             logging.error(module_dict.keys())
             raise KeyError
 
-        clean_test_dataset = self.result['clean_test'].wrapped_dataset
+
+        def _get_images_for_classes(_dataset, hard_limit=False):
+            images = []
+            labels = []
+            for img, label in _dataset:
+                images.append(img)
+                labels.append(label)
+            class_idx_whole = []
+            # num = int(self.args.clean_sample_num / self.args.num_classes)
+            num = int(self.args.num_samples_per_class)
+            if num == 0:
+                num = 1
+            for i in range(self.args.num_classes):
+                _ind = np.where(np.array(labels)==i)[0]
+                if hard_limit and len(_ind) < num:
+                    raise f"class {i} contains only {len(_ind)} samples, which is less then {num} required"
+                elif not hard_limit:
+                    _num = min(num, len(_ind))
+                else:
+                    _num = num
+                class_idx_whole.append(np.random.choice(_ind, _num, replace=False))
+            class_idx_whole = np.concatenate(class_idx_whole, axis=0)
+            image_c = [images[i] for i in class_idx_whole]
+            label_c = [labels[i] for i in class_idx_whole]
+            return image_c, label_c
 
         ### b. find a clean sample from test dataset
-        images = []
-        labels = []
-        for img, label in clean_test_dataset:
-            images.append(img)
-            labels.append(label)
-        class_idx_whole = []
-        num = int(self.args.clean_sample_num / self.args.num_classes)
-        if num == 0:
-            num = 1
-        for i in range(self.args.num_classes):
-            class_idx_whole.append(np.random.choice(np.where(np.array(labels)==i)[0], num))
-        class_idx_whole = np.concatenate(class_idx_whole, axis=0)
-        image_c = [images[i] for i in class_idx_whole]
-        label_c = [labels[i] for i in class_idx_whole]
-
+        clean_test_dataset = self.result['clean_test'].wrapped_dataset
+        image_c, label_c = _get_images_for_classes(clean_test_dataset, hard_limit=False)
         clean_dataset = xy_iter(image_c, label_c,transform=test_tran)
         clean_dataloader = DataLoader(clean_dataset, self.args.batch_size, shuffle=True)
         clean_features,clean_labels = get_features_labels(args, model, target_layer, clean_dataloader)
         logging.info('clean_features has been collected')
 
+        ### bb. find a clean sample from train dataset
+        clean_train_dataset = self.result['clean_train'].wrapped_dataset
+        image_c, label_c = _get_images_for_classes(clean_train_dataset, hard_limit=True)
+        clean_train_dataset = xy_iter(image_c, label_c,transform=test_tran)
+        clean_train_dataloader = DataLoader(clean_train_dataset, self.args.batch_size, shuffle=True)
+        clean_train_features,clean_train_labels = get_features_labels(args, model, target_layer, clean_train_dataloader)
+        logging.info('clean_train_features has been collected')
+
+
         ### c. load training dataset with poison samples
+        bd_test_dataset = self.result['bd_test'].wrapped_dataset
+        # pindex = np.where(np.array(bd_test_dataset.poison_indicator) == 1)[0]
         images_poison = []
         labels_poison = []
-        for img, label, *other_info in bd_train_dataset:
+        class_cnt = np.zeros(self.args.num_classes,dtype=int)
+        for idx, (img, label, original_index, poison_or_not, original_target) in enumerate(bd_test_dataset):
+            if label == original_target: continue
             images_poison.append(img)
             labels_poison.append(label)
+            class_cnt[label] += 1
+            if np.max(class_cnt) >= args.num_samples_per_class:
+                break
+        attack_target = np.argmax(class_cnt)
+        if class_cnt[attack_target] < args.num_samples_per_class:
+            raise f"not enough poison samples provided: class {attack_target} contains only {class_cnt[attack_target]} samples < {args.num_samples_per_class} required"
+        labels_poison = np.asarray(labels_poison)
+        attack_target_indicator = (labels_poison == attack_target)
+        labels_poison = labels_poison[attack_target_indicator]
+        _new_images_poison = list()
+        for img, ind in zip(images_poison, attack_target_indicator):
+            if ind:
+                _new_images_poison.append(img)
+        images_poison = _new_images_poison
 
-        ### d. get features of training dataset
-        train_dataset = xy_iter(images_poison, labels_poison,transform=test_tran)
-        train_dataloader = DataLoader(train_dataset, self.args.batch_size, shuffle=False)
-        train_features, train_labels = get_features_labels(args, model, target_layer, train_dataloader)
-        logging.info('train_features has been collected')
+        ### d. get features of poison dataset
+        poison_dataset = xy_iter(images_poison, labels_poison,transform=test_tran)
+        poison_dataloader = DataLoader(poison_dataset, self.args.batch_size, shuffle=False)
+        poison_features, poison_labels = get_features_labels(args, model, target_layer, poison_dataloader)
+        logging.info('poison_features has been collected')
         
-        feats_inspection = np.array(train_features)
-        class_indices_inspection = np.array(train_labels)
 
+        ### e. build global model
         feats_clean = np.array(clean_features)
         class_indices_clean = np.array(clean_labels)
 
         scan = SCAn(self.args)
         gb_model = scan.build_global_model(feats_clean, class_indices_clean, self.args.num_classes)
-        size_inspection_set = len(feats_inspection)
-        feats_all = np.concatenate([feats_inspection, feats_clean])
-        class_indices_all = np.concatenate([class_indices_inspection, class_indices_clean])
-        lc_model = scan.build_local_model(feats_all, class_indices_all, gb_model, self.args.num_classes)
-        score = scan.calc_final_score(lc_model)
+
+
+        ### f. build local model
+        feats_inspection = np.array(clean_train_features)
+        class_indices_inspection = np.array(clean_train_labels)
+        clean_lc_model = scan.build_local_model(feats_inspection, class_indices_inspection, gb_model)
+
+        ind = class_indices_inspection == attack_target
+        target_class_feats = feats_inspection[ind]
+        target_class_labels = class_indices_inspection[ind]
+
         threshold = np.exp(2)
+        test_np_list = [0.01, 0.02, 0.05, 0.1]
+        for npos in test_np_list:
+            if npos < 1:
+                npos = int(npos*self.args.num_samples_per_class)
+            np_ratio = npos/self.args.num_samples_per_class* 100
+            print('==='*20)
+            print(f'when class target class {attack_target} continas {npos} = {np_ratio:.2f}% poison samples:')
+
+            new_feats = np.concatenate([poison_features[:npos], target_class_feats[npos:]], axis=0)
+            new_labels = np.concatenate([poison_labels[:npos], target_class_labels[npos:]], axis=0)
+
+            tgt_lc_model = scan.build_local_model(new_feats, new_labels, gb_model)
+            cp_lc_model = copy.deepcopy(clean_lc_model)
+            cp_lc_model[attack_target] = tgt_lc_model[attack_target]
+            score = scan.calc_final_score(cp_lc_model)
+
+            for c in range(self.args.num_classes):
+                if score[c] > threshold:
+                    print('[class-%d] outlier_score = %f, is detected as infected' % (c, score[c]) )
+                else:
+                    print('[class-%d] outlier_score = %f' % (c, score[c]) )
+            
+
+        exit(0)
 
         suspicious_indices = []
         flag_list = []
@@ -558,7 +638,7 @@ class scan(defense):
             cluster_0_clean = []
             cluster_1_clean = []
 
-            for index, i in enumerate(lc_model['subg'][target_class]):
+            for index, i in enumerate(lc_model[target_class]['subg']):
                 if i == 1:
                     if tar[index] > size_inspection_set:
                         cluster_1_clean.append(tar[index])

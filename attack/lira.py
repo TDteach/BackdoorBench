@@ -156,7 +156,15 @@ class UNet(nn.Module):
 
 
 def all2one_target_transform(x, attack_target=1):
-    return torch.ones_like(x) * attack_target
+    if isinstance(x, torch.Tensor):
+        return torch.ones_like(x) * attack_target
+    elif isinstance(x, np.ndarray):
+        return np.ones_like(x) * attack_target
+    elif isinstance(x, np.int64):
+        return attack_target
+    else:
+        print(type(x))
+        raise ValueError('Unknown type')
 
 
 def all2all_target_transform(x, num_classes):
@@ -657,6 +665,8 @@ class Static_LIRA_BD_Dataset(torch.utils.data.Dataset):
         original_target_list = []
         original_index_list = []
 
+        self.target_transform = target_transform
+
         atkmodel.eval()
         atkmodel = atkmodel.to(args.device, non_blocking=args.non_blocking)
         for batch_idx, (x, labels, original_index, poison_indicator, original_targets) in enumerate(dataloader):
@@ -697,7 +707,7 @@ class Static_LIRA_BD_Dataset(torch.utils.data.Dataset):
                 original_target
     
     def get_poison_indices(self):
-        indices = (self.original_target_list==self.targets).nonzero()[0]
+        indices = (self.original_target_list!=self.targets).nonzero()[0]
         return indices
 
 
@@ -1125,13 +1135,17 @@ class LIRA(BadNet):
             (Compose([torch.from_numpy, denormalizer]), False),
         ])
 
-        bd_dataset = bd_test_dataloader.dataset # torch.utils.data.Subset
+        bd_dataset_subset = bd_test_dataloader.dataset # torch.utils.data.Subset
+        bd_test_dataset_full = bd_dataset_subset.dataset # Static_LIRA_BD_Dataset
+        poison_indices = bd_test_dataset_full.get_poison_indices()
+        bd_test_dataset_full.targets = bd_test_dataset_full.original_target_list
+        bd_dataset = torch.utils.data.Subset(bd_test_dataset_full, indices=poison_indices)
+
         bd_test_dataset_to_store = prepro_cls_DatasetBD_v2(
             bd_dataset,
             poison_indicator=np.ones(len(bd_dataset), dtype=int),
-
             bd_image_pre_transform= bd_transform,
-            bd_label_pre_transform= lambda x:x,
+            bd_label_pre_transform= bd_test_dataset_full.target_transform,
 
             save_folder_path=f"{args.save_path}/bd_test_dataset_stage_one"
         )
