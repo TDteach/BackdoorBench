@@ -155,7 +155,7 @@ class UNet(nn.Module):
         return out
 
 
-def all2one_target_transform(x, attack_target=1):
+def all2one_target_transform(x, attack_target):
     if isinstance(x, torch.Tensor):
         return torch.ones_like(x) * attack_target
     elif isinstance(x, np.ndarray):
@@ -219,86 +219,6 @@ def create_models(args):
     tgtoptimizer = torch.optim.Adam(tgtmodel.parameters(), lr=args.lr_atk)
 
     return atkmodel, tgtmodel, tgtoptimizer, clsmodel, create_net
-
-
-def hp_test(args, atkmodel, scratchmodel, target_transform,
-            train_loader, test_loader, epoch, trainepoch, clip_image,
-            testoptimizer=None, log_prefix='Internal', epochs_per_test=5):
-    # default phase 2 parameters to phase 1
-    if args.test_alpha is None:
-        args.test_alpha = args.alpha
-    if args.test_eps is None:
-        args.test_eps = args.eps
-
-    test_loss = 0
-    correct = 0
-
-    correct_transform = 0
-    test_transform_loss = 0
-
-    atkmodel.eval()
-    if testoptimizer is None:
-        scratchmodel.cuda()
-        testoptimizer = torch.optim.SGD(params=scratchmodel.parameters(), lr=args.lr)
-
-    for cepoch in range(trainepoch):
-        scratchmodel.train()
-        for batch_idx, (data, target) in enumerate(train_loader):
-            scratchmodel.cuda()
-            atkmodel.cuda()
-            data, target = data.cuda(), target.cuda()
-            with torch.cuda.amp.autocast(enabled=args.amp):
-                with torch.no_grad():
-                    noise = atkmodel(data) * args.test_eps
-                    atkdata = clip_image(data + noise)
-
-                atkoutput = scratchmodel(atkdata)
-                output = scratchmodel(data)
-
-                loss_clean = loss_fn(output, target)
-                loss_poison = loss_fn(atkoutput, target_transform(target))
-
-                loss = args.alpha * loss_clean + (1 - args.test_alpha) * loss_poison
-            scaler.scale(loss).backward()
-            scaler.step(testoptimizer)
-            scaler.update()
-            testoptimizer.zero_grad()
-
-        if cepoch % epochs_per_test == 0 or cepoch == trainepoch - 1:
-            scratchmodel.eval()
-            with torch.no_grad():
-                for data, target in test_loader:
-                    scratchmodel.cuda()
-                    atkmodel.cuda()
-                    data, target = data.cuda(), target.cuda()
-
-
-                    output = scratchmodel(data)
-                    cross_entropy = torch.nn.CrossEntropyLoss(reduction="sum")
-                    test_loss += cross_entropy(output, target).item()  # sum up batch loss
-                    correct += (torch.max(output, -1)[1]).eq(target).sum().item()
-
-                    noise = atkmodel(data) * args.test_eps
-                    atkdata = clip_image(data + noise)
-                    atkoutput = scratchmodel(atkdata)
-                    test_transform_loss += cross_entropy(
-                        atkoutput, target_transform(target)).item()  # sum up batch loss
-                    correct_transform += (torch.max(atkoutput, -1)[1]).eq(target_transform(target)).sum().item()
-
-            test_loss /= len(test_loader.dataset)
-            test_transform_loss /= len(test_loader.dataset)
-
-            correct /= len(test_loader.dataset)
-            correct_transform /= len(test_loader.dataset)
-
-            logging.debug(
-                '\n{}-Test set [{}]: Loss: clean {:.4f} poison {:.4f}, Accuracy: clean {:.2f} poison {:.2f}'.format(
-                    log_prefix, cepoch,
-                    test_loss, test_transform_loss,
-                    correct, correct_transform
-                ))
-
-    return correct, correct_transform
 
 
 def DSWD_dis(clean_feat, poi_feat, weight):
@@ -385,6 +305,10 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
         clsoptimizer.zero_grad()
         loss2.backward()
         clsoptimizer.step()
+
+
+    tgtoptimizer.zero_grad()
+    clsoptimizer.zero_grad()
 
     atkloss = sum(losslist) / len(losslist)
 
@@ -545,7 +469,6 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
 
                 if data_transforms is not None:
                     data = data_transforms(data)
-                optimizerC.zero_grad()
 
                 output = netC(data)
                 loss_clean = loss_fn(output, target)
@@ -564,8 +487,9 @@ def final_test(clean_test_dataloader, bd_test_dataloader, args, test_model_path,
 
                 loss = alpha * loss_clean + (1 - alpha) * loss_poison
 
-            loss.backward()
             optimizerC.zero_grad()
+            loss.backward()
+            optimizerC.step()
 
             batch_loss_list.append(loss.item())
         one_epoch_loss = sum(batch_loss_list) / len(batch_loss_list)
@@ -786,7 +710,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
     for epoch in range(start_epoch, args.both_train_epochs + 1):
         for i in range(args.train_epoch):
             logging.debug(f'===== EPOCH: {epoch}/{args.both_train_epochs + 1} CLS {i + 1}/{args.train_epoch} =====')
-            if not args.avoid_clsmodel_reinitialization:
+            if args.avoid_clsmodel_reinitialization:
                 clsoptimizer = torch.optim.SGD(params=clsmodel.parameters(), lr=args.lr)
             trainloss = train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target_transform, train_loader,
                               epoch, i, create_net, clip_image,
@@ -801,6 +725,10 @@ def main(args, clean_test_dataset_with_transform, criterion):
             clsmodel = create_net()
             scratchmodel = create_net()
 
+        scratchmodel.eval()
+        scratchmodel.to(args.device, non_blocking=args.non_blocking)
+        atkmodel.eval()
+        atkmodel.to(args.device, non_blocking=args.non_blocking)
 
         bd_test_dataset_full = Static_LIRA_BD_Dataset(clean_test_dataloader,
                                                  atkmodel,
@@ -880,7 +808,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
         clean_test_epoch_predict_list, \
         clean_test_epoch_label_list, \
             = given_dataloader_test(
-            model=clsmodel,
+            model=scratchmodel,
             test_dataloader=clean_test_dataloader,
             criterion=criterion,
             non_blocking=args.non_blocking,
@@ -897,7 +825,7 @@ def main(args, clean_test_dataset_with_transform, criterion):
         bd_test_epoch_original_index_list, \
         bd_test_epoch_poison_indicator_list, \
         bd_test_epoch_original_targets_list = test_given_dataloader_on_mix(
-            model=clsmodel,
+            model=scratchmodel,
             test_dataloader=bd_test_dataloader,
             criterion=criterion,
             non_blocking=args.non_blocking,

@@ -331,6 +331,9 @@ class OL(defense):
         clean_testset = self.result['clean_test']
         poison_testset = self.result['bd_test']
 
+        model.eval()
+        model.to(device)
+
         if preprocess is None:
             preprocess = lambda x:x
 
@@ -348,7 +351,7 @@ class OL(defense):
         n_batch = 8
         for i in range(n_batch):
             x_clean, y_clean = next(iter(test_loader))
-            x_poison, y_poison = next(iter(poison_loader))
+            x_poison, y_poison, *other_infor = next(iter(poison_loader))
 
             x_clean, y_clean = x_clean.to(device), y_clean.to(device)
             x_poison, y_poison = x_poison.to(device), y_poison.to(device)
@@ -375,9 +378,9 @@ class OL(defense):
 
     def defense(self):
         self.get_attack_result(self.args.attack_folder)
-        self.eval_linear(target_label=0)
         self.eval_orthogonal()
-
+        print('==='*20)
+        self.eval_linear(target_label=0)
 
 
         # result = self.mitigation()
