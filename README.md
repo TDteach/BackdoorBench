@@ -1,3 +1,5 @@
+<img src="resource/pyg_logo.png" style="height: 60px;" align="right">
+
 # BackdoorBench: a comprehensive benchmark of backdoor attack and defense methods
 
 ![Pytorch 1.11.0](https://img.shields.io/badge/PyTorch-1.11-brightgreen) [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-brightgreen.svg)](https://creativecommons.org/licenses/by-nc/4.0/) ![Release .20](https://img.shields.io/badge/Release-2.0-brightgreen)
@@ -344,6 +346,30 @@ If interested, you can read our recent works about backdoor learning, and more w
   author={Wu, Baoyuan and Wei, Shaokui and Zhu, Mingli and Zheng, Meixi and Zhu, Zihao and Zhang, Mingda and Chen, Hongrui and Yuan, Danni and Liu, Li and Liu, Qingshan},
   journal={arXiv preprint arXiv:2312.08890},
   year={2023}
+}
+
+@inproceedings{zhu2024breaking,
+  title={Breaking the False Sense of Security in Backdoor Defense through Re-Activation Attack},
+  author={Zhu, Mingli and Liang, Siyuan and Wu, Baoyuan},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year={2024}
+}
+
+@inproceedings{wei2024mitigating,
+  title={Mitigating Backdoor Attack by Injecting Proactive Defensive Backdoor},
+  author={Wei, Shaokui and Zha, Hongyuan and Wu, Baoyuan},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year={2024}
+}
+
+@article{gao2023imperceptible,
+  title={Imperceptible and robust backdoor attack in 3d point cloud},
+  author={Gao, Kuofeng and Bai, Jiawang and Wu, Baoyuan and Ya, Mengxi and Xia, Shu-Tao},
+  journal={IEEE Transactions on Information Forensics and Security},
+  volume={19},
+  pages={1267--1282},
+  year={2023},
+  publisher={IEEE}
 }
 
 @article{cheng2023tat,
